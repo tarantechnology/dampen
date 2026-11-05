@@ -336,33 +336,56 @@ export function mapSdkState(state: Spotify.PlaybackState, deviceName: string): P
   };
 }
 
+/**
+ * The SDK hands us real objects rather than JSON, so this one is typed — but
+ * it is still written against what the SDK *actually* sends. Ads arrive as
+ * `type: 'ad'` with a synthetic uri and no album art; they are kept (the user
+ * is hearing them) but with empty artwork.
+ */
 export function mapSdkTrack(track: Spotify.Track): SpotifyTrack | null {
-  const id = track.id;
   const name = typeof track.name === 'string' ? track.name.trim() : '';
   if (name === '') return null;
-  const uri = typeof track.uri === 'string' && track.uri !== '' ? track.uri : id === null ? null : `spotify:track:${id}`;
-  if (uri === null) return null;
 
-  const album = track.album;
-  const images = mapImages({ images: album?.images ?? [] });
+  const uri = typeof track.uri === 'string' && track.uri !== '' ? track.uri : null;
+  const id = typeof track.id === 'string' && track.id !== '' ? track.id : null;
+  const resolvedUri = uri ?? (id === null ? null : `spotify:track:${id}`);
+  if (resolvedUri === null) return null;
+
+  const album: Spotify.Album | undefined = track.album;
 
   return {
-    id: id ?? uri,
-    uri,
+    id: id ?? resolvedUri,
+    uri: resolvedUri,
     name,
-    durationMs: typeof track.duration_ms === 'number' && Number.isFinite(track.duration_ms) ? Math.max(0, track.duration_ms) : 0,
+    durationMs:
+      typeof track.duration_ms === 'number' && Number.isFinite(track.duration_ms)
+        ? Math.max(0, Math.round(track.duration_ms))
+        : 0,
     explicit: track.explicit === true,
-    artists: (album === undefined ? [] : track.artists ?? [])
-      .filter((a): a is Spotify.Entity => typeof a?.name === 'string' && a.name.trim() !== '')
-      .map((a) => ({ id: typeof a.uri === 'string' ? a.uri.split(':').pop() ?? '' : '', name: a.name.trim() })),
+    artists: (track.artists ?? [])
+      .map(sdkEntityToArtistRef)
+      .filter((a): a is SpotifyArtistRef => a !== null),
     album: {
-      id: typeof album?.uri === 'string' ? album.uri.split(':').pop() ?? '' : '',
+      id: idFromUri(album?.uri),
       name: typeof album?.name === 'string' ? album.name : '',
-      images,
+      images: mapImages({ images: album?.images ?? [] }),
       releaseDate: null,
     },
     previewUrl: null,
   };
+}
+
+function sdkEntityToArtistRef(entity: Spotify.Entity | undefined): SpotifyArtistRef | null {
+  const name = typeof entity?.name === 'string' ? entity.name.trim() : '';
+  if (name === '') return null;
+  return { id: idFromUri(entity?.uri), name };
+}
+
+/** `spotify:artist:4tZwfgrHOc3mvqYlEYSvVi` -> `4tZwfgrHOc3mvqYlEYSvVi`. */
+function idFromUri(uri: string | undefined): string {
+  if (typeof uri !== 'string') return '';
+  const last = uri.split(':').pop();
+  return last === undefined || last === uri ? '' : last;
 }
 
 /* ------------------------------------------------------------------ *
