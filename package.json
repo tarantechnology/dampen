@@ -8,7 +8,9 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "test": "node --test --experimental-strip-types lib/**/__tests__/*.test.ts"
+    "test": "npm run test:audio && npm run test:spotify",
+    "test:spotify": "tsx --test lib/spotify/__tests__/*.test.ts",
+    "test:audio": "jiti lib/audio/__tests__/run.ts"
   },
   "dependencies": {
     "clsx": "^2.1.1",
@@ -28,6 +30,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.4.5",
     "tailwindcss": "^4",
+    "tsx": "^4.23.15",
     "typescript": "^5"
   }
 }

@@ -56,6 +56,7 @@ import { Slider } from '@/components/ui/Slider';
 import { Tabs } from '@/components/ui/Tabs';
 import { Toggle } from '@/components/ui/Toggle';
 import { Tooltip } from '@/components/ui/Tooltip';
+import { accentVars } from '@/components/ui/accent';
 import { formatDb, formatHz, formatPercent } from '@/components/ui/format';
 import { useUIStore, type LibraryView } from '@/components/ui/store';
 
