@@ -29,8 +29,19 @@ export const viewport: Viewport = {
 };
 
 export default function RootLayout({ children }: LayoutProps<'/'>) {
+  /*
+   * AccentDriver writes the accent ramp into inline custom properties on
+   * <html> and sets data-bypass, both after hydration. That makes the client's
+   * <html> attributes legitimately differ from the server's, so React warns.
+   * suppressHydrationWarning covers this element's own attributes only —
+   * mismatches inside the tree are still reported.
+   */
   return (
-    <html lang="en" className={`${ui.variable} h-full antialiased`}>
+    <html
+      lang="en"
+      className={`${ui.variable} h-full antialiased`}
+      suppressHydrationWarning
+    >
       <body className="min-h-full bg-ground text-ink">{children}</body>
     </html>
   );

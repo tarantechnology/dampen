@@ -497,7 +497,11 @@ function toCaptureDevice(d: MediaDeviceInfo): CaptureDevice {
  *  3. enumerate again — now the labels are populated.
  *
  * Step 2 is skipped when labels are already available, so a returning user
- * never sees a second prompt.
+ * never sees a second prompt — and it can be skipped entirely with
+ * `{ probePermission: false }`, which is what the hot-plug listener does:
+ * plugging in headphones must never raise a microphone prompt out of nowhere.
+ * Call it without options from a user gesture (a "choose input" button), where
+ * a prompt is expected.
  *
  * Results are sorted with the most useful device first: pure virtual sinks,
  * then other virtual devices, then everything else.
@@ -507,8 +511,11 @@ function toCaptureDevice(d: MediaDeviceInfo): CaptureDevice {
  *         usable list cannot be built at all, so reporting it is more useful
  *         than returning a list of blanks).
  */
-export async function listCaptureDevices(): Promise<CaptureDevice[]> {
+export async function listCaptureDevices(
+  options: { probePermission?: boolean } = {},
+): Promise<CaptureDevice[]> {
   const devices = mediaDevices();
+  const probe = options.probePermission ?? true;
 
   const read = async (): Promise<MediaDeviceInfo[]> => {
     const all = await devices.enumerateDevices();
@@ -518,7 +525,7 @@ export async function listCaptureDevices(): Promise<CaptureDevice[]> {
   let inputs = await read();
   const hasLabels = inputs.some((d) => d.label.length > 0 && d.deviceId.length > 0);
 
-  if (!hasLabels) {
+  if (!hasLabels && probe) {
     try {
       await probePermission(devices);
     } catch (err) {
@@ -573,7 +580,10 @@ export function onDeviceChange(
 
   let stopped = false;
   const handler = (): void => {
-    void listCaptureDevices()
+    // Never probe from a hot-plug event: the user did not ask for anything, so
+    // a permission prompt here would be unexplained and alarming. An
+    // unlabelled list is the honest result until they press the button.
+    void listCaptureDevices({ probePermission: false })
       .then((list) => {
         if (!stopped) listener(list);
       })

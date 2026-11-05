@@ -39,7 +39,18 @@ import type {
   InputMode,
   Preset,
 } from '@/lib/types';
-import { DampenEngine } from './engine';
+import {
+  ambienceAllowedFor,
+  DampenEngine,
+  type LatencyReport,
+} from './engine';
+import {
+  listCaptureDevices,
+  listOutputDevices,
+  onDeviceChange,
+  type CaptureDevice,
+  type FeedbackAssessment,
+} from './capture';
 import { METER_FLOOR_DB } from './dsp';
 import { setParamPath } from './params';
 import { DEFAULT_PARAMS, PRESETS, getPreset, resolveParams } from './presets';
@@ -54,8 +65,16 @@ const METER_INTERVAL_MS = 50;
 /** Don't re-render for sub-quarter-dB meter wobble. */
 const METER_EPSILON_DB = 0.25;
 
-/** Ramp used when a whole preset is applied — a morph, not a jump. */
-const PRESET_RAMP_MS = 350;
+/**
+ * Ramp used when a whole preset is applied.
+ *
+ * One second, not 350 ms, on the research's advice: a preset change moves ~30
+ * parameters at once and is itself a *deviant* in irrelevant-sound terms —
+ * deviation effects run d = 0.93 to 1.22 and add about 4 percentage points to
+ * serial-recall error. A slow morph is measurably less disruptive than a snap,
+ * and preset changes should never be automatic.
+ */
+const PRESET_RAMP_MS = 1000;
 
 /** Ramp used while the macro dial is being dragged. */
 const MACRO_RAMP_MS = 90;
@@ -70,6 +89,16 @@ const SILENT_METERS: EngineMeters = {
   reduction: 0,
 };
 
+const NO_RISK: FeedbackAssessment = { risk: false, reason: 'none', message: '' };
+
+const NO_LATENCY: LatencyReport = {
+  base: 0,
+  output: 0,
+  capture: 0,
+  totalMs: 0,
+  partial: true,
+};
+
 /* ------------------------------------------------------------------ *
  * Store
  * ------------------------------------------------------------------ */
@@ -82,6 +111,31 @@ interface DampenStore {
   meters: EngineMeters;
   inputMode: InputMode;
   analysers: { input: AnalyserNode; output: AnalyserNode } | null;
+
+  /* ---- capture path ---- */
+
+  /** Enumerated audio inputs. Empty until `refreshCaptureDevices` is called. */
+  captureDevices: CaptureDevice[];
+  /** The input the user picked, if any. */
+  captureDevice: CaptureDevice | null;
+  /** Negotiated stream properties, for the UI's "44.1 kHz / 2 ch" readout. */
+  captureSampleRate: number | null;
+  captureChannels: number | null;
+
+  /* ---- policy + safety ---- */
+
+  /** False when an ambience bed would overlap Spotify Content; see the engine. */
+  ambienceAllowed: boolean;
+  /** True when starting audio could double or feed back. */
+  feedbackRisk: boolean;
+  /** The full assessment, with a user-facing message. */
+  feedback: FeedbackAssessment;
+  /** True once the engine's runaway guard has muted the output. */
+  runawayTripped: boolean;
+  /** Measured end-to-end latency. */
+  latency: LatencyReport;
+  /** The last fatal engine or capture error, as a message. */
+  error: string | null;
 }
 
 const useStore = create<DampenStore>(() => ({
@@ -93,6 +147,18 @@ const useStore = create<DampenStore>(() => ({
   meters: SILENT_METERS,
   inputMode: 'local',
   analysers: null,
+
+  captureDevices: [],
+  captureDevice: null,
+  captureSampleRate: null,
+  captureChannels: null,
+
+  ambienceAllowed: ambienceAllowedFor('local'),
+  feedbackRisk: false,
+  feedback: NO_RISK,
+  runawayTripped: false,
+  latency: NO_LATENCY,
+  error: null,
 }));
 
 /* ------------------------------------------------------------------ *
@@ -151,22 +217,104 @@ function commitParams(next: DampenParams, rampMs: number, presetId?: string): vo
   eng?.setAllParams(next, rampMs);
 }
 
+/** Pull everything the engine derives for itself back into the store. */
+function syncFromEngine(eng: DampenEngine): void {
+  const settings = eng.streamSettings;
+  useStore.setState({
+    status: eng.status,
+    analysers: eng.analysers,
+    inputMode: eng.inputMode,
+    ambienceAllowed: eng.ambienceAllowed,
+    feedbackRisk: eng.feedbackRisk,
+    feedback: eng.feedback,
+    runawayTripped: eng.runawayTripped,
+    latency: eng.getLatency(),
+    captureSampleRate: settings?.sampleRate ?? null,
+    captureChannels: settings?.channelCount ?? null,
+    error: eng.error?.message ?? null,
+  });
+}
+
 async function start(): Promise<void> {
   const eng = getEngine();
   if (!eng) return;
   await eng.start();
-  useStore.setState({ status: eng.status, analysers: eng.analysers });
+  syncFromEngine(eng);
 }
 
 async function setSource(src: DampenSource): Promise<void> {
   const eng = getEngine();
   if (!eng) return;
   await eng.setSource(src);
-  useStore.setState({ status: eng.status, analysers: eng.analysers });
+  syncFromEngine(eng);
 }
 
 function setInputMode(mode: InputMode): void {
-  useStore.setState({ inputMode: mode });
+  const eng = getEngine();
+  // The engine owns the consequences — the ambience policy and the latency
+  // hint — so it is told first and the store mirrors what it decided.
+  eng?.setInputMode(mode);
+  if (eng) syncFromEngine(eng);
+  else useStore.setState({ inputMode: mode, ambienceAllowed: ambienceAllowedFor(mode) });
+}
+
+/**
+ * Enumerate audio inputs and outputs.
+ *
+ * **Call this from a user gesture.** If the origin has never been granted
+ * microphone access, `enumerateDevices` returns blank labels and this will
+ * raise the permission prompt in order to fill them in — which is expected
+ * behind a "choose input" button and alarming anywhere else.
+ */
+async function refreshCaptureDevices(): Promise<CaptureDevice[]> {
+  try {
+    const [devices, outputs] = await Promise.all([listCaptureDevices(), listOutputDevices()]);
+    useStore.setState({ captureDevices: devices });
+    const eng = getEngine();
+    if (eng) {
+      // Re-assess with the current selection against the fresh output list.
+      const selected = useStore.getState().captureDevice;
+      const live = selected ? devices.find((d) => d.deviceId === selected.deviceId) ?? null : null;
+      useStore.setState({ captureDevice: live });
+      eng.setCaptureDevice(live, outputs);
+      syncFromEngine(eng);
+    }
+    return devices;
+  } catch (err) {
+    useStore.setState({
+      captureDevices: [],
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return [];
+  }
+}
+
+/**
+ * Record which capture device the user selected, so the engine can assess
+ * feedback risk *before* audio starts. Pass `null` to clear it.
+ */
+function setCaptureDevice(device: CaptureDevice | null): void {
+  useStore.setState({ captureDevice: device });
+  const eng = getEngine();
+  if (!eng) return;
+  eng.setCaptureDevice(device);
+  syncFromEngine(eng);
+  // The output list matters for the same-device check and may be stale; refresh
+  // it in the background without re-prompting.
+  void listOutputDevices()
+    .then((outputs) => {
+      eng.setCaptureDevice(device, outputs);
+      syncFromEngine(eng);
+    })
+    .catch(() => undefined);
+}
+
+/** Clear a tripped runaway guard once the user has fixed their routing. */
+function resetRunawayGuard(): void {
+  const eng = getEngine();
+  if (!eng) return;
+  eng.resetRunawayGuard();
+  syncFromEngine(eng);
 }
 
 function setParam(path: string, value: number | string): void {
@@ -259,6 +407,37 @@ export interface UseDampen {
   analysers: { input: AnalyserNode; output: AnalyserNode } | null;
   /** Magnitude response of the EQ/filter section, dB, for the given freqs. */
   filterResponse(freqs: Float32Array): Float32Array;
+
+  /* ---- additive: the capture path (Path B) ---- */
+
+  /** Enumerated audio inputs; empty until {@link refreshCaptureDevices}. */
+  captureDevices: CaptureDevice[];
+  /** The selected input, if any. */
+  captureDevice: CaptureDevice | null;
+  /** The live stream's negotiated rate and channel count, for a UI readout. */
+  captureSampleRate: number | null;
+  captureChannels: number | null;
+  /** Enumerate devices. Must be called from a user gesture (may prompt). */
+  refreshCaptureDevices(): Promise<CaptureDevice[]>;
+  /** Record the user's choice so feedback risk can be assessed before start. */
+  setCaptureDevice(device: CaptureDevice | null): void;
+
+  /* ---- additive: policy + safety ---- */
+
+  /** False when an ambience bed would overlap Spotify Content. */
+  ambienceAllowed: boolean;
+  /** True when starting audio could double or feed back. */
+  feedbackRisk: boolean;
+  /** The assessment behind {@link feedbackRisk}, with a message to show. */
+  feedback: FeedbackAssessment;
+  /** True once the engine muted itself to stop a runaway. */
+  runawayTripped: boolean;
+  /** Undo that, after the user fixes their routing. */
+  resetRunawayGuard(): void;
+  /** Measured end-to-end latency; `partial` if the platform under-reports. */
+  latency: LatencyReport;
+  /** The last fatal error, as a message. */
+  error: string | null;
 }
 
 /**
@@ -276,6 +455,41 @@ export function useDampen(): UseDampen {
   const meters = useStore((s) => s.meters);
   const inputMode = useStore((s) => s.inputMode);
   const analysers = useStore((s) => s.analysers);
+
+  const captureDevices = useStore((s) => s.captureDevices);
+  const captureDevice = useStore((s) => s.captureDevice);
+  const captureSampleRate = useStore((s) => s.captureSampleRate);
+  const captureChannels = useStore((s) => s.captureChannels);
+  const ambienceAllowed = useStore((s) => s.ambienceAllowed);
+  const feedbackRisk = useStore((s) => s.feedbackRisk);
+  const feedback = useStore((s) => s.feedback);
+  const runawayTripped = useStore((s) => s.runawayTripped);
+  const latency = useStore((s) => s.latency);
+  const error = useStore((s) => s.error);
+
+  /*
+   * Device hot-plug. The user is very likely to install BlackHole *while
+   * Dampen is open* — that is the whole point of the setup flow — so the list
+   * has to notice. This subscription never probes for permission, so plugging
+   * in headphones cannot raise a microphone prompt out of nowhere; the labels
+   * stay blank until `refreshCaptureDevices` is called from a gesture.
+   */
+  useEffect(() => {
+    return onDeviceChange((devices) => {
+      useStore.setState({ captureDevices: devices });
+      const eng = engine;
+      const selected = useStore.getState().captureDevice;
+      if (!eng || !selected) return;
+      // If the selected device has vanished, drop the selection so the UI
+      // cannot keep showing an input that no longer exists.
+      const live = devices.find((d) => d.deviceId === selected.deviceId) ?? null;
+      if (live === null) {
+        useStore.setState({ captureDevice: null });
+        eng.setCaptureDevice(null);
+        syncFromEngine(eng);
+      }
+    });
+  }, []);
 
   /*
    * Meter polling. Mounted only while the engine is actually running, so a
@@ -320,6 +534,17 @@ export function useDampen(): UseDampen {
     }
   }, [status]);
 
+  /*
+   * Latency and the runaway flag are only knowable once the context exists, so
+   * they are re-read whenever the status changes rather than polled. (The
+   * runaway guard itself lives in `getMeters`, which the loop above drives at
+   * 20 Hz; this just mirrors its verdict into the store.)
+   */
+  useEffect(() => {
+    const eng = engine;
+    if (eng) syncFromEngine(eng);
+  }, [status]);
+
   // Stable identity for the one closure the visualiser calls every frame.
   const stableFilterResponse = useCallback(
     (freqs: Float32Array): Float32Array => filterResponse(freqs),
@@ -337,6 +562,19 @@ export function useDampen(): UseDampen {
       start,
       setSource,
       setInputMode,
+      captureDevices,
+      captureDevice,
+      captureSampleRate,
+      captureChannels,
+      refreshCaptureDevices,
+      setCaptureDevice,
+      ambienceAllowed,
+      feedbackRisk,
+      feedback,
+      runawayTripped,
+      resetRunawayGuard,
+      latency,
+      error,
       setParam,
       applyPreset,
       setAmount,
@@ -344,6 +582,25 @@ export function useDampen(): UseDampen {
       analysers,
       filterResponse: stableFilterResponse,
     }),
-    [status, params, presetId, bypass, meters, inputMode, analysers, stableFilterResponse],
+    [
+      status,
+      params,
+      presetId,
+      bypass,
+      meters,
+      inputMode,
+      analysers,
+      stableFilterResponse,
+      captureDevices,
+      captureDevice,
+      captureSampleRate,
+      captureChannels,
+      ambienceAllowed,
+      feedbackRisk,
+      feedback,
+      runawayTripped,
+      latency,
+      error,
+    ],
   );
 }

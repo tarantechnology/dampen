@@ -164,9 +164,32 @@ class NoiseProcessor extends AudioWorkletProcessor {
     ];
   }
 
-  constructor() {
+  /**
+   * @param {{processorOptions?: {kind?: string}}} [options]
+   */
+  constructor(options) {
     super();
-    this._kind = 'none';
+
+    /*
+     * The kind can arrive two ways, and it needs both.
+     *
+     * `port.postMessage` is the live control path, but it is asynchronous
+     * across the main/render thread boundary: a message posted immediately
+     * before rendering starts is **not** guaranteed to be seen by the first
+     * `process()` call. In a realtime context that is harmless (the message
+     * lands within a render quantum, ~2.7 ms, while the host's fade-in is
+     * still climbing out of silence) — but in an `OfflineAudioContext`, which
+     * can render seconds of audio before the message is delivered, it means
+     * the generator would emit nothing at all.
+     *
+     * So the initial kind is also accepted through `processorOptions`, which
+     * is passed synchronously through the constructor and is therefore in
+     * effect from sample 0. Measured: without this, an offline render started
+     * in the same task as the postMessage produces silence for a random
+     * subset of kinds.
+     */
+    const opts = (options && options.processorOptions) || {};
+    this._kind = typeof opts.kind === 'string' && KINDS.indexOf(opts.kind) !== -1 ? opts.kind : 'none';
     this._alive = true;
     /** @type {ChannelState[]} */
     this._states = [];

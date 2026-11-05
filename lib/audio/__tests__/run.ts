@@ -20,6 +20,7 @@
 
 import { formatReport, runCases } from './harness';
 import { PURE_TESTS } from './dsp.test';
+import { CAPTURE_TESTS } from './capture.test';
 import { OFFLINE_TESTS } from './offline.test';
 
 async function main(): Promise<void> {
@@ -27,6 +28,7 @@ async function main(): Promise<void> {
 
   for (const [title, cases] of [
     ['pure DSP (no AudioContext)', PURE_TESTS],
+    ['filters, guard, capture + policy', CAPTURE_TESTS],
     ['Web Audio (OfflineAudioContext)', OFFLINE_TESTS],
   ] as const) {
     const report = await runCases(cases);

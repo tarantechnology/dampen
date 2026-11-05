@@ -134,6 +134,12 @@ export function createAmbienceBed(ctx: BaseAudioContext, status: WorkletStatus):
       numberOfOutputs: 1,
       // A generator has no input, so the output channel count must be stated.
       outputChannelCount: [2],
+      // Synchronous initial state. `port.postMessage` is the live control
+      // path, but it crosses a thread boundary and is not guaranteed to be
+      // seen by the first `process()` call; `processorOptions` is. Harmless
+      // here (the bed starts detached and silent) but it means the processor
+      // is correct for any caller, including an offline render.
+      processorOptions: { kind: 'none' },
     });
   } catch {
     // Registered-but-unconstructible should not happen, but a thrown
@@ -274,6 +280,13 @@ export function createAmbienceBed(ctx: BaseAudioContext, status: WorkletStatus):
         noise.connect(hp);
         connected = true;
       }
+      /*
+       * The generator switch is a cross-thread message, so it takes up to a
+       * render quantum (~2.7 ms at 48 kHz) to take effect. That is covered by
+       * the fade-in below, which climbs out of true silence over at least
+       * MIN_HALF_MS — by the time the bed is audible the new generator is
+       * certainly running. This ordering is deliberate, not incidental.
+       */
       noise.port.postMessage({ kind: p.kind });
       // Jump the shaping filters while silent, then fade the bed back in.
       shapeFor(p, 0);
