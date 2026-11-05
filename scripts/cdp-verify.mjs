@@ -144,6 +144,11 @@ async function main() {
       '--disable-backgrounding-occluded-windows',
       '--disable-renderer-backgrounding',
       '--window-size=1440,900',
+      /*
+       * CI runners have no usable sandbox for a non-root Chrome. Only add
+       * this there — never weaken the sandbox on a developer's machine.
+       */
+      ...(process.env.CI ? ['--no-sandbox', '--disable-dev-shm-usage'] : []),
     ],
     { stdio: 'ignore' },
   );

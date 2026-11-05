@@ -5,8 +5,15 @@ on:
     branches: [main]
   pull_request:
 
+env:
+  # The app refuses to boot without these; CI never talks to Spotify.
+  SPOTIFY_CLIENT_ID: ci-placeholder
+  SPOTIFY_CLIENT_SECRET: ci-placeholder
+  SPOTIFY_REDIRECT_URI: http://127.0.0.1:3000/api/spotify/callback
+
 jobs:
   check:
+    name: Typecheck, lint, unit tests, build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,11 +26,58 @@ jobs:
         run: npm run typecheck
       - name: Lint
         run: npm run lint
-      - name: Unit tests
+      - name: Unit tests (72 DSP + 142 Spotify)
         run: npm test
       - name: Build
         run: npm run build
+
+  browser:
+    name: DSP suite in a real browser
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+
+      # The Web Audio half of the suite needs a real OfflineAudioContext, and
+      # the engine-integration cases need live AudioContexts and worklets.
+      # Node has neither, so those 31 cases are skipped by `npm test` and only
+      # ever run here.
+      - uses: browser-actions/setup-chrome@v1
+        id: chrome
+        with:
+          chrome-version: stable
+
+      - name: Start dev server
+        run: |
+          npm run dev > /tmp/dev.log 2>&1 &
+          for i in $(seq 1 90); do
+            if curl -fsS -o /dev/null http://127.0.0.1:3000/selftest; then
+              echo "dev server up"; exit 0
+            fi
+            sleep 1
+          done
+          echo "dev server never came up"; cat /tmp/dev.log; exit 1
+
+      - name: Run DSP suite + screenshot the UI
         env:
-          SPOTIFY_CLIENT_ID: ci-placeholder
-          SPOTIFY_CLIENT_SECRET: ci-placeholder
-          SPOTIFY_REDIRECT_URI: http://127.0.0.1:3000/api/spotify/callback
+          CHROME_PATH: ${{ steps.chrome.outputs.chrome-path }}
+        run: node scripts/cdp-verify.mjs
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-screenshots
+          path: |
+            .verify/*.png
+            .verify/selftest.txt
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Dev server log on failure
+        if: failure()
+        run: tail -100 /tmp/dev.log
