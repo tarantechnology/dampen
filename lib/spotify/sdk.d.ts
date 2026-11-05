@@ -124,7 +124,11 @@ declare namespace Spotify {
     getOAuthToken: (callback: (token: string) => void) => void;
     /** 0..1. Defaults to 1 if omitted. */
     volume?: number;
-    /** Opt out of the SDK hijacking the OS media keys. Default true. */
+    /**
+     * Default false. When true the SDK populates the Media Session API and
+     * takes over the OS media keys — left off so it cannot fight Dampen's own
+     * transport or the user's other audio.
+     */
     enableMediaSession?: boolean;
   }
 
@@ -145,6 +149,7 @@ declare namespace Spotify {
     getCurrentState(): Promise<PlaybackState | null>;
     getVolume(): Promise<number>;
     setVolume(volume: number): Promise<void>;
+    setName(name: string): Promise<void>;
 
     pause(): Promise<void>;
     resume(): Promise<void>;

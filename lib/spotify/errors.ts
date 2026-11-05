@@ -24,6 +24,12 @@ export type SpotifyErrorKind =
   | 'not_found'
   /** 429 — carries `retryAfterMs`. */
   | 'rate_limited'
+  /**
+   * 429 with `{ "reason": "QUOTA_EXCEEDED" }`. Since the July 2026 quota
+   * changes Spotify distinguishes "you're going too fast" from "your app's
+   * rolling quota is spent". Backing off does not fix the second one.
+   */
+  | 'quota_exceeded'
   /** 5xx, or a Spotify gateway hiccup. */
   | 'server'
   /** 200 with a body we could not parse, or a shape we cannot use. */
@@ -69,6 +75,9 @@ export function isAuthFailure(error: SpotifyError): boolean {
 export function isRetryable(error: SpotifyError): boolean {
   return error.kind === 'offline' || error.kind === 'rate_limited' || error.kind === 'server';
 }
+
+/** 429 reason body sent by Spotify since July 2026. */
+export const QUOTA_EXCEEDED_REASON = 'QUOTA_EXCEEDED';
 
 const KIND_BY_STATUS: Readonly<Record<number, SpotifyErrorKind>> = {
   400: 'bad_request',
@@ -140,6 +149,8 @@ export function describeError(error: SpotifyError): string {
       return 'Spotify had nothing for that request.';
     case 'rate_limited':
       return 'Spotify is rate-limiting us. Trying again shortly.';
+    case 'quota_exceeded':
+      return "This app's Spotify API quota is exhausted. Try again later.";
     case 'server':
       return 'Spotify is having trouble right now.';
     case 'malformed':

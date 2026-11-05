@@ -42,29 +42,76 @@ Plus a **masking bed** — brown noise at around −32 dBFS — which covers wha
 of the presence band. Spectral masking is doing real perceptual work here, not
 decoration.
 
-Eight presets ship: `Next Room`, `Underwater`, `Rainy Window`, `Tape Memory`,
+Eight presets ship (local-file paths get the full set): `Next Room`, `Underwater`, `Rainy Window`, `Tape Memory`,
 `Library`, `Deep Focus`, `Distant Radio`, `Dream`.
 
 ## The interesting constraint
 
-**You cannot filter Spotify's web audio.** The Web Playback SDK plays through an
-EME/Widevine-protected media element, and a `MediaElementAudioSourceNode` attached to
-a DRM-protected element receives zeroed samples. By design. That is not a bug to
-engineer around.
+**You cannot filter Spotify's web audio.** Two independent walls, and it is worth being
+precise about which one actually stops you:
+
+1. **No DOM handle.** The Web Playback SDK injects a cross-origin iframe from a
+   Spotify-controlled origin, and the media element lives inside it. You cannot reach
+   `iframe.contentDocument`, so you cannot call `createMediaElementSource()` on it at
+   all. ([spotify/web-playback-sdk#105](https://github.com/spotify/web-playback-sdk/issues/105))
+2. **CORS silence is normative.** Even with a handle, the Web Audio spec *requires* a
+   `MediaElementAudioSourceNode` to output silence for a CORS-cross-origin resource —
+   silently, undetectably, irreversibly.
+   ([Web Audio API 1.1 §1.22.4](https://www.w3.org/TR/webaudio-1.1/#MediaElementAudioSourceOptions-security))
+
+The widely repeated "DRM zeroes the samples" claim is actually the *weaker* of the
+reasons — [EME §7.6](https://www.w3.org/TR/encrypted-media-2/#media-element-restrictions)
+only *permits* zeroing, it does not require it, and browsers have differed. Don't build
+on it either way.
+
+The SDK's entire DSP surface is `setVolume(0..1)`. That is it. No EQ, no filter, no
+sample access, no analyser.
 
 So Dampen has three input paths, all feeding one engine and one UI:
 
 | Path | Source | DSP | Needs |
 |---|---|---|---|
-| **A** — Spotify Web Playback | In-browser SDK | Volume contour + masking bed (stream is DRM) | Premium |
-| **B** — System capture ★ | Spotify desktop → virtual audio device | **Full chain, real Spotify audio** | BlackHole / VB-Cable |
+| **A** — Spotify Web Playback | In-browser SDK | Volume contour only | Premium |
+| **B** — System capture ★ | Spotify desktop → virtual audio device | **Full chain, real audio** | BlackHole / VB-Cable |
 | **C** — Local audio | Drop in a file | **Full chain** | nothing |
 
-Path B is the good one: Spotify desktop → BlackHole → Dampen captures plain PCM →
-full 16-stage chain → your speakers. No DRM in the path.
+Path B is the good one, and it works because the tap sits *after* the content decryption
+module, on ordinary decoded PCM:
+
+```
+encrypted segments → CDM (Widevine) → decoder → PCM → virtual device → Dampen → speakers
+```
+
+No keys, no decryption, no protected stream — just an audio input device, the same as a
+microphone. This is why it is reliable where page-level `getDisplayMedia` is not.
 
 Nothing captured is ever recorded, written to disk, or sent anywhere. Realtime,
 in-memory, local only.
+
+## Positioning, and the licensing reality
+
+Dampen is **a system audio processor** that happens to show you what Spotify is playing.
+That framing is deliberate, and it is also why it is more useful: path B dampens
+*anything* your machine plays — Spotify, Apple Music, YouTube, a podcast.
+
+Being straight about the constraints, because they are real:
+
+- Spotify's [Developer Policy §III](https://developer.spotify.com/policy) says *"Do not
+  permit any device or system to segue, mix, re-mix, or overlap any Spotify Content with
+  any other audio content."* So **the ambience bed is disabled whenever the source is
+  captured Spotify audio.** It stays available for local files, where it is entirely fine.
+- [Developer Terms §IV](https://developer.spotify.com/terms) prohibits *"modifying,
+  editing, altering, creating derivative works"* of Spotify Content. Real-time DSP on
+  captured output is a grey area: it circumvents no protection measure and makes no copy
+  (so DMCA §1201 is not implicated), but it is plainly "altering". The exposure is
+  contractual — key revocation, not prosecution.
+- Spotify *does* license real-time audio manipulation, just not through the public
+  platform — see the [2025 rekordbox / Serato / djay integrations](https://newsroom.spotify.com/2025-09-24/dj-software-integration-premium/).
+  That door is a business conversation, not an API call.
+- Dampen never rips, records, or redistributes anything, and it requires your own Spotify
+  Developer app and your own Premium account.
+
+Use it on your own machine, for your own listening. Not legal advice.
 
 ## Quick start
 

@@ -170,12 +170,18 @@ function httpsOrNull(value: string | null): string | null {
   return /^https?:\/\//i.test(value) ? value : null;
 }
 
-/** `{ added_at, track }` from `/me/tracks` and `/playlists/{id}/tracks`. */
+/**
+ * `{ added_at, track }` from `/me/tracks`, and `{ added_at, item }` from the
+ * post-Feb-2026 `/playlists/{id}/items`. The pre-2026 playlist endpoint used
+ * `track`, so accept either key.
+ *
+ * `track`/`item` is `null` for entries whose track was delisted from Spotify —
+ * the single most common cause of `undefined` leaking into a playlist UI.
+ */
 export function mapTrackRowWithAddedAt(raw: unknown): SpotifyTrack | null {
   if (!isRecord(raw)) return null;
-  // `track` is null for tracks delisted from Spotify. This is the common case
-  // this mapper exists for.
-  const track = mapTrack(raw.track);
+  const payload = raw.item ?? raw.track;
+  const track = mapTrack(payload);
   if (track === null) return null;
   const addedAt = str(raw, 'added_at');
   return addedAt === null ? track : { ...track, addedAt };
@@ -221,7 +227,11 @@ export function mapPlaylist(raw: unknown): SpotifyPlaylist | null {
     // Spotify sends `""` far more often than a real description.
     description: strOr(raw, 'description', ''),
     images: mapImages(raw),
-    trackCount: intOr(rec(raw, 'tracks'), 'total', 0),
+    // Feb 2026 renamed the playlist's `tracks` count object to `items` and
+    // deprecated `tracks`. Both still appear depending on the client ID, so
+    // prefer the new key. (`rec` returns null for arrays, so the paging-level
+    // `items` array can never be mistaken for this.)
+    trackCount: intOr(rec(raw, 'items'), 'total', intOr(rec(raw, 'tracks'), 'total', 0)),
     ownerName: str(rec(raw, 'owner'), 'display_name') ?? str(rec(raw, 'owner'), 'id') ?? '',
     collaborative: boolOr(raw, 'collaborative', false),
     // Genuinely tri-state: null when the caller can't see the setting.

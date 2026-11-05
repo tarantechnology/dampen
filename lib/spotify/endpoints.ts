@@ -27,6 +27,10 @@ const RULES: readonly AllowRule[] = [
 
   // ---- library ----
   { pattern: /^me\/playlists$/, methods: ['GET'] },
+  // Feb 2026 renamed this to `/items`. Both are allowed because which one
+  // works depends on when the client ID was registered; `client.ts` tries
+  // `/items` first and falls back. See docs/SPOTIFY_SETUP.md.
+  { pattern: new RegExp(`^playlists\\/${ID}\\/items$`), methods: ['GET'] },
   { pattern: new RegExp(`^playlists\\/${ID}\\/tracks$`), methods: ['GET'] },
   { pattern: /^me\/tracks$/, methods: ['GET'] },
   { pattern: /^me\/player\/recently-played$/, methods: ['GET'] },
