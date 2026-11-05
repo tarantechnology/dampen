@@ -716,9 +716,14 @@ export function SpectrumScope({
       ctx.lineJoin = 'round';
       ctx.lineCap = 'butt';
 
+      // Area fills close onto the true axis floor (below the visible frame,
+      // see AXIS_OVERSHOOT) rather than onto y1, so a floored spectrum never
+      // produces a polygon that crosses its own baseline.
+      const floorY = L.y1 + AXIS_OVERSHOOT;
+
       if (an) {
         // Layer 1 — what you would have heard.
-        traceArea(ctx, L.ghostY, L, L.y1);
+        traceArea(ctx, L.ghostY, L, floorY);
         ctx.fillStyle = grad.ghost;
         ctx.fill();
         tracePolyline(ctx, L.ghostY, L);
@@ -727,7 +732,7 @@ export function SpectrumScope({
         ctx.stroke();
 
         // Layer 2 — what you actually hear.
-        traceArea(ctx, L.liveY, L, L.y1);
+        traceArea(ctx, L.liveY, L, floorY);
         ctx.fillStyle = grad.live;
         ctx.fill();
         tracePolyline(ctx, L.liveY, L);
@@ -747,7 +752,7 @@ export function SpectrumScope({
           : Math.sin((nowMs / 1000) * ((Math.PI * 2) / IDLE_PERIOD));
         const lift = breath * 2.5;
         for (let c = 0; c < L.cols; c++) L.ghostY[c] = levelToY(L.idleDb[c] + lift, L);
-        traceArea(ctx, L.ghostY, L, L.y1);
+        traceArea(ctx, L.ghostY, L, floorY);
         ctx.fillStyle = p.idleFill;
         ctx.fill();
         tracePolyline(ctx, L.ghostY, L);

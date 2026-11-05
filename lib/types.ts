@@ -14,7 +14,17 @@
 export interface LowpassParams {
   /** Cutoff in Hz. 20000 = effectively open. */
   freq: number;
-  /** Resonance. Keep <= 1.0 or the cutoff whistles. */
+  /**
+   * Resonance **in decibels**, not a traditional Q.
+   *
+   * Web Audio's `BiquadFilterNode.Q` is specified in dB for the `lowpass`
+   * and `highpass` types (and only those): "this value is not a traditional
+   * Q, but is a measure of the peakedness of the response, in decibels".
+   * So 0 dB is already slightly peaked, and a maximally-flat Butterworth
+   * section is 20*log10(1/sqrt(2)) = -3.0103 dB. Positive values whistle.
+   *
+   * Contrast `PeakParams.q`, which IS a traditional Q.
+   */
   q: number;
   /** Cascade count. Each stage adds ~12 dB/oct. 1..4 => 12..48 dB/oct. */
   stages: 1 | 2 | 3 | 4;
