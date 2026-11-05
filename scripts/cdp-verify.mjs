@@ -115,9 +115,12 @@ async function main() {
   await rm(OUT, { recursive: true, force: true });
   await mkdir(OUT, { recursive: true });
 
-  // Confirm the dev server is actually up before paying for a Chrome launch.
+  /*
+   * Probe /selftest, not a UI route. The UI pages are frequently mid-edit and
+   * a 500 there is a finding to report, not a reason to refuse to start.
+   */
   try {
-    const probe = await fetch(`${BASE}/design`);
+    const probe = await fetch(`${BASE}/selftest`);
     if (!probe.ok) throw new Error(`HTTP ${probe.status}`);
   } catch (e) {
     console.error(`Dev server not reachable at ${BASE} — ${e.message}`);
@@ -248,6 +251,12 @@ async function main() {
       await c.send('Network.enable');
       await c.send('Page.enable');
       await sleep(2500);
+
+      const status = (await fetch(BASE + page.path)).status;
+      if (status !== 200) {
+        console.log(`  ${page.path} → HTTP ${status}`);
+        failures.push(`${page.path} returned HTTP ${status}`);
+      }
 
       for (const w of page.widths) {
         await c.send('Emulation.setDeviceMetricsOverride', {
