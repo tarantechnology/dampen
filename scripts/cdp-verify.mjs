@@ -63,7 +63,8 @@ class CDP {
         const p = c.#pending.get(msg.id);
         if (!p) return;
         c.#pending.delete(msg.id);
-        msg.error ? p.reject(new Error(msg.error.message)) : p.resolve(msg.result ?? {});
+        if (msg.error) p.reject(new Error(msg.error.message));
+        else p.resolve(msg.result ?? {});
         return;
       }
       for (const fn of c.#listeners.get(msg.method) ?? []) fn(msg.params);

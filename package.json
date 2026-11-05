@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "next typegen && tsc --noEmit",
     "test": "npm run test:audio && npm run test:spotify",
     "test:spotify": "tsx --test lib/spotify/__tests__/*.test.ts",
     "test:audio": "jiti lib/audio/__tests__/run.ts"

@@ -12,7 +12,7 @@
  * headless Chrome driver can read it and fail CI on a real regression.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { runSelfTest, type SelfTestReport } from '@/lib/audio/selftest';
 
@@ -43,9 +43,25 @@ export default function SelfTestPage() {
     }
   }, []);
 
-  // Auto-run on mount: the driver just navigates and polls the global.
+  /*
+   * Auto-run once on mount; the driver just navigates and polls the global.
+   *
+   * The ref guard is load-bearing, not a formality. React StrictMode invokes
+   * effects twice in development, which previously started two concurrent
+   * `runSelfTest()` passes against one memoised engine — the second observed
+   * a half-built graph and reported `status: 'initializing'` with no
+   * analysers. That cost real time to diagnose as an engine bug when it was
+   * only ever this effect.
+   *
+   * Deferring past the commit also keeps the first `setState` out of the
+   * synchronous effect body, which would otherwise cascade renders.
+   */
+  const started = useRef(false);
   useEffect(() => {
-    void run();
+    if (started.current) return;
+    started.current = true;
+    const id = setTimeout(() => void run(), 0);
+    return () => clearTimeout(id);
   }, [run]);
 
   const counts = report

@@ -43,7 +43,8 @@ async function cdpSend(ws, id, method, params = {}) {
       const m = JSON.parse(ev.data);
       if (m.id !== id) return;
       ws.removeEventListener('message', onMsg);
-      m.error ? reject(new Error(m.error.message)) : resolve(m.result);
+      if (m.error) reject(new Error(m.error.message));
+      else resolve(m.result);
     };
     ws.addEventListener('message', onMsg);
     setTimeout(() => reject(new Error(`${method} timed out`)), 30_000);
