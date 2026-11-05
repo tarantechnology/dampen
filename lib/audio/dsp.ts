@@ -319,3 +319,137 @@ export function blockLevels(buf: Float32Array): { peakDb: number; rmsDb: number 
   const rms = n > 0 ? Math.sqrt(sumSq / n) : 0;
   return { peakDb: linToDbFloored(peak), rmsDb: linToDbFloored(rms) };
 }
+
+/* ------------------------------------------------------------------ *
+ * Output safety guard
+ * ------------------------------------------------------------------ */
+
+/**
+ * Where the safety guard starts bending, as a linear amplitude.
+ * 0.9 is −0.92 dBFS: above any sane playback level, below full scale.
+ */
+export const OUTPUT_GUARD_KNEE = 0.9;
+
+/** The absolute ceiling the engaged guard imposes (−0.44 dBFS). */
+export const OUTPUT_GUARD_CEILING = 0.95;
+
+/**
+ * Transfer curve for the final output guard — the last thing before the
+ * destination, and the only reason a feedback loop cannot reach full scale.
+ *
+ * Why a `WaveShaperNode` and not a second `DynamicsCompressorNode`: a
+ * compressor's gain computer carries a fixed internal lookahead delay (several
+ * ms in every implementation), and the capture path is explicitly a
+ * low-latency path. A waveshaper has **zero latency** — it is a memoryless
+ * lookup — so the guard costs nothing in the budget it is protecting.
+ *
+ * `engaged = false` returns the exact identity. That matters: the guard sits
+ * in the signal path permanently, and `DEFAULT_PARAMS` is contractually
+ * required to be indistinguishable from no processing. (A `WaveShaperNode`
+ * clamps inputs beyond ±1 to its endpoint values, so even the identity curve
+ * bounds the output at full scale — which is precisely what the output device
+ * does anyway.)
+ *
+ * `engaged = true` is exactly linear up to {@link OUTPUT_GUARD_KNEE} and then
+ * bends to {@link OUTPUT_GUARD_CEILING} asymptotically:
+ *
+ *     y = K + (C − K)·tanh((|x| − K)/(C − K)),  |x| > K
+ *
+ * `tanh'(0) = 1` and the scale factors cancel, so the slope is continuous at
+ * the knee — no corner to generate a sudden burst of harmonics as the signal
+ * crosses it.
+ */
+export function makeOutputGuardCurve(
+  engaged: boolean,
+  length = 2048,
+): Float32Array<ArrayBuffer> {
+  const n = Math.max(2, Math.floor(num(length, 2048, 2, 1 << 16)));
+  const curve = new Float32Array(n);
+  const K = OUTPUT_GUARD_KNEE;
+  const C = OUTPUT_GUARD_CEILING;
+  const span = C - K;
+
+  for (let i = 0; i < n; i++) {
+    const x = (i / (n - 1)) * 2 - 1;
+    if (!engaged) {
+      curve[i] = x;
+      continue;
+    }
+    const a = Math.abs(x);
+    if (a <= K) {
+      curve[i] = x;
+    } else {
+      const y = K + span * Math.tanh((a - K) / span);
+      curve[i] = x < 0 ? -y : y;
+    }
+  }
+  return curve;
+}
+
+/* ------------------------------------------------------------------ *
+ * Biquad Q conventions  —  the single most confusable thing here
+ * ------------------------------------------------------------------ */
+
+/**
+ * `1/√2 = 0.7071` — the **linear** Q of a maximally-flat (Butterworth)
+ * second-order section. This is the convention `DampenParams` uses, as
+ * documented in `lib/types.ts` ("Resonance. Keep <= 1.0 or the cutoff
+ * whistles").
+ */
+export const BUTTERWORTH_Q_LINEAR = Math.SQRT1_2;
+
+/**
+ * `20·log10(1/√2) = −3.0103` — the same filter expressed the way a Web Audio
+ * `BiquadFilterNode` wants it for `lowpass` and `highpass`.
+ *
+ * ## Read this before touching any Q
+ *
+ * The Web Audio spec (§1.13.2) says, verbatim: *"For **lowpass** and
+ * **highpass** filters the `Q` value is **interpreted to be in dB**… For the
+ * bandpass, notch, allpass, and peaking filters, this value is a **linear**
+ * value… This is not used for the lowshelf and highshelf filters."*
+ *
+ * All three engines implement it that way (`resonance = pow10(resonance/20)`
+ * before `alpha = sin(w0)/(2·resonance)`), so it is not a Chrome quirk. The
+ * identity worth memorising is that **for a lowpass, the magnitude at the
+ * cutoff in dB is exactly the `Q` value**: `|H(ω₀)| = 10^(Q_dB/20)`.
+ *
+ * The consequences all bite:
+ *
+ *  - `Q.value = 1` — *the node's default* — is `Q_linear = 1.122`, with a
+ *    ~2 dB resonant bump below the corner. It is not Butterworth.
+ *  - `Q.value = 0` is `Q_linear = 1`, i.e. still peaked by +1.25 dB. "Zero"
+ *    does not mean "no resonance", and a floor of 0 makes a clean rolloff
+ *    unreachable — four cascaded stages at `Q.value = 0` accumulate a real
+ *    bump at the corner.
+ *  - `Q.value = 0.0001`, which appears in several published libraries, is
+ *    ≈ 0 dB and therefore ≈ `Q_linear = 1` — **not** a critically damped
+ *    filter, which is what the author presumably wanted.
+ *  - Negative `Q.value` is legal and genuinely useful for lowpass/highpass: it
+ *    damps. For peaking/bandpass/notch/allpass a negative Q is nonsense and
+ *    Blink clamps it to 0 to avoid an unstable filter.
+ *
+ * So: **`DampenParams` carries linear Q, and the engine converts** with
+ * {@link linearQToDb} for lowpass and highpass only. Peaking filters
+ * (`presenceDip`) take the linear value directly; shelves ignore Q entirely.
+ */
+export const BUTTERWORTH_Q_DB = -3.010299956639812;
+
+/**
+ * Linear Q → the dB value a `lowpass`/`highpass` `BiquadFilterNode` expects.
+ *
+ * **Only for lowpass and highpass.** Passing a peaking filter's Q through
+ * this, or assigning a linear Q straight to a lowpass's `Q.value`, are the
+ * two halves of the most likely silent bug in a Web Audio filter chain:
+ * `Q.value = 0.7071` (unconverted) is `Q_linear = 1.085`, a filter with a
+ * resonant bump exactly where maximal flatness was intended.
+ */
+export function linearQToDb(qLinear: number): number {
+  const q = num(qLinear, BUTTERWORTH_Q_LINEAR, 0.05, 40);
+  return 20 * Math.log10(q);
+}
+
+/** Inverse of {@link linearQToDb}, for UI readouts. */
+export function dbQToLinear(qDb: number): number {
+  return Math.pow(10, num(qDb, BUTTERWORTH_Q_DB, -60, 60) / 20);
+}

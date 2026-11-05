@@ -59,16 +59,26 @@ export const PARAM_RANGES: Readonly<Record<string, readonly [number, number]>> =
   outputGain: [-60, 12],
 
   'highpass.freq': [10, 2000],
-  // For `lowpass`/`highpass` the Web Audio spec defines Q as a *resonance in
-  // decibels*, not a classic Q factor: 0 dB is Butterworth, positive values
-  // put a peak at the corner. Above ~12 dB the corner whistles, so cap there.
-  'highpass.q': [0, 12],
+  /*
+   * `highpass.q` and `lowpass.q` are **linear** Q in `DampenParams`, as
+   * `lib/types.ts` documents ("Resonance. Keep <= 1.0 or the cutoff
+   * whistles"). Web Audio's `BiquadFilterNode` wants *decibels* for lowpass
+   * and highpass, so the engine converts with `linearQToDb`. Keeping the
+   * public contract linear means presets read the way the research tables
+   * write them (0.707 = Butterworth, 3.0 = the "underwater" resonance) and
+   * the one dangerous conversion lives in exactly one place.
+   *
+   * The ceiling of 8 is well past "whistles"; it exists so the resonant
+   * `underwater` setting (3.0) is comfortably inside the range rather than
+   * pinned at the top of it.
+   */
+  'highpass.q': [0.1, 8],
 
   'lowShelf.freq': [40, 600],
   'lowShelf.gain': [-24, 24],
 
   'lowpass.freq': [120, LOWPASS_OPEN_HZ],
-  'lowpass.q': [0, 12],
+  'lowpass.q': [0.1, 8],
   'lowpass.stages': [1, 4],
 
   'presenceDip.freq': [400, 8000],
@@ -95,9 +105,12 @@ export const PARAM_RANGES: Readonly<Record<string, readonly [number, number]>> =
 
   saturation: [0, 1],
 
-  'wowFlutter.wowRate': [0.05, 4],
+  // Zero is a legal rate: the research tables use 0/0 for every preset that
+  // wants no transport wobble at all, and a zero-rate LFO is a flat DC of
+  // sin(0) = 0, i.e. exactly no modulation.
+  'wowFlutter.wowRate': [0, 8],
   'wowFlutter.wowDepth': [0, 1],
-  'wowFlutter.flutterRate': [2, 20],
+  'wowFlutter.flutterRate': [0, 24],
   'wowFlutter.flutterDepth': [0, 1],
 
   'bitcrush.bits': [1, 16],

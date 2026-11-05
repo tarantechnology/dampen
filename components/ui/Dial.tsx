@@ -80,7 +80,7 @@ export function Dial({
   const shown = reduce ? raw : smooth;
 
   const current = useRef(clamp(value, 0, 1));
-  const emitted = useRef(current.current);
+  const emitted = useRef(clamp(value, 0, 1));
 
   const rootRef = useRef<HTMLDivElement | null>(null);
   const sliderRef = useRef<HTMLDivElement | null>(null);

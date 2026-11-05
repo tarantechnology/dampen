@@ -27,7 +27,7 @@
  */
 
 import type { AmbienceKind, AmbienceParams } from '@/lib/types';
-import { clamp, dbToLin, num } from './dsp';
+import { BUTTERWORTH_Q_DB, clamp, dbToLin, num } from './dsp';
 import { canUse, type WorkletStatus } from './worklets';
 
 /* ------------------------------------------------------------------ *
@@ -145,12 +145,14 @@ export function createAmbienceBed(ctx: BaseAudioContext, status: WorkletStatus):
 
   const hp = ctx.createBiquadFilter();
   hp.type = 'highpass';
-  hp.Q.value = 0;
+  // Decibels, not a linear Q — see BUTTERWORTH_Q_DB. 0 here would be a
+  // +1.25 dB bump at the corner, which a masking bed must not have.
+  hp.Q.value = BUTTERWORTH_Q_DB;
   hp.frequency.value = SHAPES.none.hp;
 
   const lp = ctx.createBiquadFilter();
   lp.type = 'lowpass';
-  lp.Q.value = 0;
+  lp.Q.value = BUTTERWORTH_Q_DB;
   lp.frequency.value = Math.min(SHAPES.none.lp, nyquist * 0.98);
 
   const tiltLow = ctx.createBiquadFilter();

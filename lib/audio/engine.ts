@@ -45,17 +45,32 @@
  */
 
 import type {
+  AmbienceParams,
   DampenParams,
   DampenSource,
   EngineMeters,
   EngineStatus,
+  InputMode,
 } from '@/lib/types';
 import { createAmbienceBed, type AmbienceBed } from './ambience';
-import { LOWPASS_STAGE_COUNT, LowpassStage } from './biquad';
+import { cascadeStageQsDb, LOWPASS_STAGE_COUNT, LowpassStage } from './biquad';
+import {
+  assessFeedbackRisk,
+  CaptureError,
+  captureErrorMessage,
+  preferredContextSampleRate,
+  readCaptureSettings,
+  type CaptureDevice,
+  type CaptureStreamSettings,
+  type FeedbackAssessment,
+} from './capture';
 import {
   blockLevels,
+  BUTTERWORTH_Q_DB,
   dbToLin,
   driftWindow,
+  linearQToDb,
+  makeOutputGuardCurve,
   makeSaturationCurve,
   METER_FLOOR_DB,
   num,
@@ -102,6 +117,33 @@ const SATURATION_ENGAGE = 0.0005;
 const FFT_SIZE = 2048;
 const SMOOTHING = 0.8;
 
+/**
+ * Output RMS above which, *and only when a feedback risk has been flagged*,
+ * the runaway guard starts counting. A dampened background track sits at
+ * −25 to −15 dBFS RMS; −6 dBFS sustained is not music, it is a loop.
+ */
+const RUNAWAY_RMS_DB = -6;
+
+/** Consecutive 20 Hz meter polls above {@link RUNAWAY_RMS_DB} before ducking. */
+const RUNAWAY_POLLS = 30;
+
+/** How fast the runaway guard pulls the output down once it decides. */
+const RUNAWAY_DUCK_MS = 120;
+
+/** No risk, as a frozen value, so identity comparisons are cheap. */
+const NO_FEEDBACK_RISK: FeedbackAssessment = Object.freeze({
+  risk: false,
+  reason: 'none' as const,
+  message: '',
+});
+
+/** Ambience is silenced to this by policy (see `ambienceAllowed`). */
+const AMBIENCE_OFF: AmbienceParams = Object.freeze({
+  kind: 'none' as const,
+  level: -Infinity,
+  tone: 0.5,
+});
+
 /* ------------------------------------------------------------------ *
  * Internal graph shape
  * ------------------------------------------------------------------ */
@@ -141,6 +183,8 @@ interface Graph {
   readonly wetBypass: GainNode;
   readonly dryBypass: GainNode;
   readonly outputGain: GainNode;
+  /** Zero-latency output safety clipper; see `makeOutputGuardCurve`. */
+  readonly guard: WaveShaperNode;
   readonly analyserOut: AnalyserNode;
 
   /** Everything disconnectable, for `dispose`. */
@@ -157,13 +201,80 @@ export type LatencyHint = AudioContextLatencyCategory | number;
 
 export interface DampenEngineOptions {
   /**
-   * `'playback'` by default, as the architecture doc requires: it asks the
-   * browser for the largest buffer it is willing to give us, which is the
-   * right trade for a chain with a convolver and three worklets in it. We are
-   * not monitoring a live instrument; nobody notices 100 ms of latency on a
-   * background music player, and everybody notices a dropout.
+   * Overrides the per-input-mode default (see {@link latencyHintFor}). Set it
+   * only if you know better than the engine does.
    */
   readonly latencyHint?: LatencyHint;
+  /** Initial input mode. Drives latency, and whether ambience is permitted. */
+  readonly inputMode?: InputMode;
+}
+
+/** End-to-end latency, as far as the platform will tell us. */
+export interface LatencyReport {
+  /**
+   * `AudioContext.baseLatency` — the graph's own buffering, i.e. how far ahead
+   * of the output device the render thread works. Seconds.
+   */
+  base: number;
+  /**
+   * `AudioContext.outputLatency` — the device/driver path from the browser to
+   * the speaker. Seconds. Not implemented everywhere; 0 when unavailable.
+   */
+  output: number;
+  /**
+   * Capture-side latency reported by the input track, when the browser offers
+   * it (`MediaTrackSettings.latency`). Seconds, 0 when unknown.
+   */
+  capture: number;
+  /** The sum, in milliseconds — the figure to show the user. */
+  totalMs: number;
+  /** True if `output` or `capture` was unavailable, so `totalMs` understates. */
+  partial: boolean;
+}
+
+/**
+ * Latency policy per input mode.
+ *
+ * `'interactive'` asks the browser for the smallest buffer it will give us.
+ * The capture path needs it: the user is hearing the dampened output *instead
+ * of* the original, so every millisecond of added latency is a millisecond of
+ * lip-sync error against video and of lag behind a transport button.
+ *
+ * `'playback'` asks for the largest buffer, which is the right trade for local
+ * files and the Spotify SDK path: nobody notices 200 ms on a background music
+ * player, and everybody notices a dropout from a convolver plus three
+ * worklets fighting for a 128-frame deadline.
+ */
+export function latencyHintFor(mode: InputMode): LatencyHint {
+  return mode === 'capture' ? 'interactive' : 'playback';
+}
+
+/**
+ * Whether an ambience bed may be mixed in, given the input mode.
+ *
+ * This is a **policy** constraint, not a technical one. Spotify's Developer
+ * Policy §III (quoted in `docs/EFFECTS_RESEARCH.md` §6.7) says:
+ *
+ * > "Do not permit any device or system to segue, mix, re-mix, or overlap any
+ * > Spotify Content with any other audio content."
+ *
+ * A rain bed under a Spotify track is other audio content overlapped with
+ * Spotify Content — the same clause under which Spotify pulled every
+ * third-party DJ integration in 2020. So the bed is hard-muted whenever the
+ * audio could be Spotify Content, which is both the `capture` path (Path B,
+ * the OS tap) and the `spotify` path (Path A, the Web Playback SDK, where the
+ * clause binds hardest because we are an API client).
+ *
+ * Note this is slightly broader than the instruction, which named `capture`
+ * only: `spotify` is included because the policy argument there is strictly
+ * stronger, and silently allowing the one case that uses a Spotify API key
+ * would be the wrong way round. It is a one-line change if that is not wanted.
+ *
+ * `local` — the user's own files — is unaffected, and the bed is fully
+ * available there.
+ */
+export function ambienceAllowedFor(mode: InputMode): boolean {
+  return mode === 'local';
 }
 
 /* ------------------------------------------------------------------ *
@@ -183,7 +294,26 @@ export class DampenEngine {
   private lastError: Error | null = null;
 
   private readonly listeners = new Set<StatusListener>();
-  private readonly latencyHint: LatencyHint;
+  /** Explicit override from the constructor, or null to follow the input mode. */
+  private readonly latencyHintOverride: LatencyHint | null;
+
+  /* ---- input mode / policy ---- */
+
+  private inputModeValue: InputMode;
+  /** Sample rate the context is wanted at, or null for "browser's choice". */
+  private desiredSampleRate: number | null = null;
+  /** Latency hint the live context was actually built with. */
+  private builtLatencyHint: LatencyHint | null = null;
+
+  /* ---- capture risk ---- */
+
+  private captureDeviceInfo: CaptureDevice | null = null;
+  private outputDeviceInfo: readonly MediaDeviceInfo[] = [];
+  private feedbackValue: FeedbackAssessment = NO_FEEDBACK_RISK;
+  private captureSettings: CaptureStreamSettings | null = null;
+  private runawayPolls = 0;
+  private runawayDucked = false;
+  private guardEngaged = false;
 
   /* ---- source bookkeeping ---- */
 
@@ -199,6 +329,8 @@ export class DampenEngine {
   private sourceNode: AudioNode | null = null;
   private bufferNode: AudioBufferSourceNode | null = null;
   private activeStream: MediaStream | null = null;
+  /** `removeEventListener` thunks for the active stream's `ended` handlers. */
+  private streamLossCleanups: Array<() => void> = [];
 
   /* ---- metering ---- */
 
@@ -226,7 +358,13 @@ export class DampenEngine {
   private readonly irCache = new Map<string, AudioBuffer>();
 
   constructor(options: DampenEngineOptions = {}) {
-    this.latencyHint = options.latencyHint ?? 'playback';
+    this.latencyHintOverride = options.latencyHint ?? null;
+    this.inputModeValue = options.inputMode ?? 'local';
+  }
+
+  /** The latency hint the next context will be built with. */
+  private get wantedLatencyHint(): LatencyHint {
+    return this.latencyHintOverride ?? latencyHintFor(this.inputModeValue);
   }
 
   /* ---------------------------------------------------------------- *
@@ -265,6 +403,127 @@ export class DampenEngine {
   get analysers(): { input: AnalyserNode; output: AnalyserNode } | null {
     if (!this.graph) return null;
     return { input: this.graph.analyserIn, output: this.graph.analyserOut };
+  }
+
+  /** How the user is feeding audio in. Drives latency and ambience policy. */
+  get inputMode(): InputMode {
+    return this.inputModeValue;
+  }
+
+  /**
+   * False when an ambience bed would overlap Spotify Content. See
+   * {@link ambienceAllowedFor}. When false the bed is hard-muted *in the
+   * engine*, whatever `params.ambience` says — the UI's choice is remembered
+   * and comes back when the input mode does.
+   */
+  get ambienceAllowed(): boolean {
+    return ambienceAllowedFor(this.inputModeValue);
+  }
+
+  /**
+   * True when starting audio could double or feed back: the capture device
+   * passes audio through to the speakers, shares a physical device with our
+   * output, or is a real microphone. Set the device with
+   * {@link setCaptureDevice}; read the explanation from {@link feedback}.
+   */
+  get feedbackRisk(): boolean {
+    return this.feedbackValue.risk;
+  }
+
+  /** The full feedback assessment, including a user-facing message. */
+  get feedback(): FeedbackAssessment {
+    return this.feedbackValue;
+  }
+
+  /** True once the runaway guard has pulled the output down. */
+  get runawayTripped(): boolean {
+    return this.runawayDucked;
+  }
+
+  /** Negotiated properties of the live capture stream, if the source is one. */
+  get streamSettings(): CaptureStreamSettings | null {
+    return this.captureSettings;
+  }
+
+  /**
+   * Switch input mode.
+   *
+   * Two things follow from it, and both are enforced here rather than in the
+   * UI: the ambience bed is permitted or hard-muted
+   * ({@link ambienceAllowedFor}), and the `AudioContext`'s latency hint
+   * changes ({@link latencyHintFor}).
+   *
+   * The latency change cannot be applied to a live context — `latencyHint` is
+   * a construction-time option — so it is deferred rather than forced: the
+   * next `setSource` rebuilds the context if the hint no longer matches.
+   * Tearing down a running context the instant a mode button is pressed would
+   * drop audio that is still playing, for no benefit; by the time the mode
+   * actually matters the caller is changing source anyway.
+   */
+  setInputMode(mode: InputMode): void {
+    if (this.disposed || mode === this.inputModeValue) return;
+    this.inputModeValue = mode;
+    // Re-apply so the ambience policy takes effect immediately, with a fade.
+    this.applyParams(DEFAULT_RAMP_MS);
+    this.refreshFeedback();
+  }
+
+  /**
+   * Tell the engine which capture device is selected, so it can assess
+   * feedback risk. Pass `null` when the source is not a capture stream.
+   *
+   * `outputs` (from `capture.ts`'s `listOutputDevices`) lets the assessment
+   * spot the dangerous case where the input and the output are the same
+   * physical device.
+   */
+  setCaptureDevice(
+    device: CaptureDevice | null,
+    outputs: readonly MediaDeviceInfo[] = this.outputDeviceInfo,
+  ): void {
+    if (this.disposed) return;
+    this.captureDeviceInfo = device;
+    this.outputDeviceInfo = outputs;
+    this.refreshFeedback();
+  }
+
+  /**
+   * End-to-end latency, as far as the platform will report it.
+   *
+   * `baseLatency` is widely implemented; `outputLatency` is not (it is absent
+   * in Safari and was long absent in Firefox) and capture-side latency is
+   * reported by almost nobody — so `partial` tells the UI whether `totalMs` is
+   * a floor or a real figure, which is the difference between an honest
+   * readout and a misleading one.
+   */
+  getLatency(): LatencyReport {
+    const ctx = this.ctx;
+    const finite = (v: unknown): number =>
+      typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0;
+
+    const base = finite(ctx?.baseLatency);
+    // `outputLatency` is not in every lib.dom version; read it defensively.
+    const out = finite(
+      ctx ? (ctx as unknown as { outputLatency?: number }).outputLatency : undefined,
+    );
+    const capture = finite(this.captureSettings?.latency);
+
+    const haveOutput = out > 0;
+    const haveCapture = this.captureSettings?.latency != null;
+    return {
+      base,
+      output: out,
+      capture,
+      totalMs: (base + out + capture) * 1000,
+      partial: !haveOutput || (this.captureSettings !== null && !haveCapture),
+    };
+  }
+
+  /** Clear a tripped runaway guard and restore the output gain. */
+  resetRunawayGuard(): void {
+    if (!this.runawayDucked) return;
+    this.runawayDucked = false;
+    this.runawayPolls = 0;
+    this.applyParams(DEFAULT_RAMP_MS);
   }
 
   /** Subscribe to status changes. Returns an unsubscribe function. */
@@ -327,6 +586,24 @@ export class DampenEngine {
    */
   async setSource(src: DampenSource): Promise<void> {
     if (this.disposed) return;
+
+    /*
+     * Work out what the context has to look like *before* it is built, so the
+     * first build is already correct and the common case never rebuilds.
+     * See `preferredContextSampleRate` in `capture.ts` for why the capture
+     * path dictates the context's sample rate.
+     */
+    if (src.kind === 'stream') {
+      const settings = readCaptureSettings(src.stream);
+      this.captureSettings = settings;
+      this.desiredSampleRate = preferredContextSampleRate(settings);
+    } else {
+      this.captureSettings = null;
+      this.desiredSampleRate = null;
+    }
+
+    await this.ensureCompatibleContext();
+    this.clearError();
     await this.ensureGraph();
     const ctx = this.ctx;
     const graph = this.graph;
@@ -354,6 +631,8 @@ export class DampenEngine {
         node.connect(graph.inputGain);
         this.sourceNode = node;
         this.activeStream = src.stream;
+        this.watchStreamForLoss(src.stream);
+        this.refreshFeedback();
         return;
       }
 
@@ -451,12 +730,64 @@ export class DampenEngine {
     // node (it was an AudioParam in very old implementations).
     const reduction = Number.isFinite(g.compressor.reduction) ? g.compressor.reduction : 0;
 
+    this.checkRunaway(inLevels.peakDb, outLevels.rmsDb);
+
     return {
       inputPeak: inLevels.peakDb,
       outputPeak: outLevels.peakDb,
       outputRms: outLevels.rmsDb,
       reduction,
     };
+  }
+
+  /**
+   * The second half of "never let it howl".
+   *
+   * The {@link makeOutputGuardCurve} clipper bounds the *instantaneous* level,
+   * so a loop can never exceed −0.44 dBFS or damage anything — but a bounded
+   * loop is still a loud one. This detects the sustained, simultaneous rise in
+   * input *and* output level that a real loop produces and pulls the output
+   * down for good.
+   *
+   * It is deliberately narrow, because a false positive is a muted player:
+   *
+   *  - It only arms when a risk has been flagged via {@link setCaptureDevice},
+   *    so a local-file listener can never trip it.
+   *  - It needs **both** meters sustained above −6 dBFS. Dampened background
+   *    music lives at −25 to −15 dBFS RMS by construction; −6 dBFS RMS held
+   *    for a second and a half is not a mix, it is a loop.
+   *  - The counter decays, so transients and loud passages cannot accumulate.
+   *
+   * **Known limitation, stated plainly:** this runs inside `getMeters`, which
+   * means it only runs while something is polling the meters — the hook does,
+   * at 20 Hz, whenever the engine is running. A consumer that never calls
+   * `getMeters` gets the clipper but not the ducker. Putting it on an
+   * independent timer would make the engine own a timer it cannot cancel from
+   * the audio thread; doing it properly would mean a sidechain
+   * `AudioWorklet` reporting level over its port, which is the right answer if
+   * this ever needs to be guaranteed.
+   */
+  private checkRunaway(inputPeakDb: number, outputRmsDb: number): void {
+    if (!this.feedbackValue.risk || this.runawayDucked) return;
+
+    if (outputRmsDb > RUNAWAY_RMS_DB && inputPeakDb > RUNAWAY_RMS_DB) {
+      this.runawayPolls++;
+    } else if (this.runawayPolls > 0) {
+      this.runawayPolls--;
+    }
+
+    if (this.runawayPolls < RUNAWAY_POLLS) return;
+
+    const ctx = this.ctx;
+    const g = this.graph;
+    if (!ctx || !g) return;
+    this.runawayDucked = true;
+    this.runawayPolls = 0;
+    rampLinear(ctx, g.outputGain.gain, 0, RUNAWAY_DUCK_MS);
+    this.lastError = new Error(
+      'Dampen muted its output: the input and output levels were climbing together, ' +
+        'which means the capture device is hearing Dampen. Pick a different input or output.',
+    );
   }
 
   /**
@@ -541,31 +872,7 @@ export class DampenEngine {
     this.irCache.clear();
 
     this.releaseSource();
-
-    const g = this.graph;
-    if (g) {
-      try {
-        g.driftOsc.stop();
-      } catch {
-        /* never started, or already stopped */
-      }
-      // Tell the worklet processors to return false so they are collected
-      // rather than lingering until the context closes.
-      g.wow?.port.postMessage({ type: 'release' });
-      g.crush?.port.postMessage({ type: 'release' });
-      g.ambience.dispose();
-      g.width.dispose();
-      for (const s of g.lowpass) s.dispose();
-      for (const node of g.all) {
-        try {
-          node.disconnect();
-        } catch {
-          /* already detached */
-        }
-      }
-    }
-    this.graph = null;
-    this.graphPromise = null;
+    this.teardownGraph();
 
     const ctx = this.ctx;
     if (ctx) {
@@ -581,6 +888,70 @@ export class DampenEngine {
   /* ---------------------------------------------------------------- *
    * Construction
    * ---------------------------------------------------------------- */
+
+  /**
+   * Recompute the feedback assessment and engage or release the output guard.
+   *
+   * The guard is only engaged when a risk has been flagged, because an engaged
+   * guard is not transparent above −0.92 dBFS and `DEFAULT_PARAMS` has to be.
+   * Swapping the curve is the same operation as a saturation drive change and
+   * is equally click-free: the two curves agree exactly over the whole range
+   * the signal is actually using at the moment of the swap.
+   */
+  private refreshFeedback(): void {
+    const device = this.inputModeValue === 'capture' ? this.captureDeviceInfo : null;
+    this.feedbackValue = assessFeedbackRisk(device, this.outputDeviceInfo);
+    if (!this.feedbackValue.risk) {
+      this.runawayPolls = 0;
+      if (this.runawayDucked) this.resetRunawayGuard();
+    }
+
+    const g = this.graph;
+    if (!g) return;
+    if (this.feedbackValue.risk !== this.guardEngaged) {
+      this.guardEngaged = this.feedbackValue.risk;
+      g.guard.curve = makeOutputGuardCurve(this.guardEngaged);
+    }
+  }
+
+  /**
+   * Disconnect and release every node, leaving the `AudioContext` itself
+   * alone. Shared by `dispose()` and by `ensureCompatibleContext()`, which
+   * needs to rebuild the graph into a *new* context without tearing the
+   * engine down.
+   */
+  private teardownGraph(): void {
+    const g = this.graph;
+    this.graph = null;
+    this.graphPromise = null;
+    if (!g) return;
+
+    try {
+      g.driftOsc.stop();
+    } catch {
+      /* never started, or already stopped */
+    }
+    // Tell the worklet processors to return false so they are collected
+    // rather than lingering until the context closes.
+    g.wow?.port.postMessage({ type: 'release' });
+    g.crush?.port.postMessage({ type: 'release' });
+    g.ambience.dispose();
+    g.width.dispose();
+    for (const stage of g.lowpass) stage.dispose();
+    for (const node of g.all) {
+      try {
+        node.disconnect();
+      } catch {
+        /* already detached */
+      }
+    }
+    // A rebuilt graph must re-derive these rather than reuse stale state.
+    this.satDriveApplied = -1;
+    this.satOversampled = false;
+    this.guardEngaged = false;
+    this.irAppliedKey = '';
+    this.irCache.clear();
+  }
 
   private setStatus(next: EngineStatus): void {
     if (this.statusValue === next) return;
@@ -622,11 +993,35 @@ export class DampenEngine {
     // embedded WebViews still only have the prefixed one.
     const Ctor = w.AudioContext ?? w.webkitAudioContext;
     if (!Ctor) throw new Error('Web Audio API is unavailable in this browser');
+
+    const latencyHint = this.wantedLatencyHint;
+    const sampleRate = this.desiredSampleRate;
+
+    /*
+     * `sampleRate` is only passed when a capture stream told us its real rate.
+     * See `preferredContextSampleRate` in `capture.ts` for why matching the
+     * capture device's rate matters more than any other context option.
+     * An unsupported rate throws NotSupportedError, hence the staircase of
+     * fallbacks: rate + hint, then hint alone, then nothing at all (ancient
+     * prefixed constructors reject the options bag entirely).
+     */
+    if (sampleRate !== null) {
+      try {
+        const ctx = new Ctor({ latencyHint, sampleRate });
+        this.builtLatencyHint = latencyHint;
+        return ctx;
+      } catch {
+        this.desiredSampleRate = null;
+      }
+    }
     try {
-      return new Ctor({ latencyHint: this.latencyHint });
+      const ctx = new Ctor({ latencyHint });
+      this.builtLatencyHint = latencyHint;
+      return ctx;
     } catch {
-      // Old webkitAudioContext ignores (and sometimes rejects) the options bag.
-      return new Ctor();
+      const ctx = new Ctor();
+      this.builtLatencyHint = null;
+      return ctx;
     }
   }
 
@@ -653,6 +1048,8 @@ export class DampenEngine {
       // click. Everything after this point ramps.
       this.applyParams(0);
       this.setBypass(this.bypassValue);
+      // Re-derive the guard state for the freshly built graph.
+      this.refreshFeedback();
       this.syncStatusFromContext();
     } catch (err) {
       this.lastError = err instanceof Error ? err : new Error(String(err));
@@ -741,6 +1138,12 @@ export class DampenEngine {
 
     const outputGain = ctx.createGain();
 
+    // The last node before the analyser and the destination. Starts as the
+    // exact identity; only engaged when a feedback risk is flagged.
+    const guard = ctx.createWaveShaper();
+    guard.curve = makeOutputGuardCurve(false);
+    guard.oversample = 'none';
+
     const analyserOut = ctx.createAnalyser();
     analyserOut.fftSize = FFT_SIZE;
     analyserOut.smoothingTimeConstant = SMOOTHING;
@@ -804,7 +1207,10 @@ export class DampenEngine {
 
     dampenMix.connect(wetBypass);
     wetBypass.connect(outputGain);
-    outputGain.connect(analyserOut);
+    // The output analyser sits *after* the guard so the meters report what the
+    // listener actually hears, guard action included.
+    outputGain.connect(guard);
+    guard.connect(analyserOut);
     analyserOut.connect(ctx.destination);
 
     const all: AudioNode[] = [
@@ -829,6 +1235,7 @@ export class DampenEngine {
       wetBypass,
       dryBypass,
       outputGain,
+      guard,
       analyserOut,
     ];
     if (wow) all.push(wow);
@@ -868,6 +1275,7 @@ export class DampenEngine {
       wetBypass,
       dryBypass,
       outputGain,
+      guard,
       analyserOut,
       all,
     };
@@ -908,7 +1316,14 @@ export class DampenEngine {
      * −0.01 dB at 40 Hz, i.e. transparent in the audible band. */
     const hpOpen = p.highpass.freq <= HIGHPASS_OPEN_HZ;
     rampSmooth(ctx, g.highpass.frequency, hpOpen ? 10 : Math.min(p.highpass.freq, fMax), rampMs);
-    rampSmooth(ctx, g.highpass.Q, hpOpen ? 0 : p.highpass.q, rampMs);
+    // `highpass.q` is LINEAR in DampenParams (per lib/types.ts) but the node
+    // wants decibels. See BUTTERWORTH_Q_DB for why this conversion exists.
+    rampSmooth(
+      ctx,
+      g.highpass.Q,
+      hpOpen ? BUTTERWORTH_Q_DB : linearQToDb(p.highpass.q),
+      rampMs,
+    );
 
     /* ---- low shelf (structural bass lift) ---- */
     rampSmooth(ctx, g.lowShelf.frequency, Math.min(p.lowShelf.freq, fMax), rampMs);
@@ -919,13 +1334,24 @@ export class DampenEngine {
      * below the "fully open" sentinel. The second condition is what makes
      * DEFAULT_PARAMS (20 kHz, 1 stage) exactly transparent. */
     const lpOpen = p.lowpass.freq >= LOWPASS_OPEN_HZ;
+    // Staggered Butterworth alignment: `stages = n` is a genuine order-2n
+    // filter, so the -3 dB corner stays exactly at `freq` whatever the stage
+    // count. Returns dB, ready for the node.
+    const stageQs = cascadeStageQsDb(p.lowpass.stages, p.lowpass.q);
     for (let i = 0; i < g.lowpass.length; i++) {
       const active = !lpOpen && i < p.lowpass.stages;
-      g.lowpass[i].setTarget(active, Math.min(p.lowpass.freq, fMax), p.lowpass.q, rampMs);
+      g.lowpass[i].setTarget(
+        active,
+        Math.min(p.lowpass.freq, fMax),
+        stageQs[i] ?? BUTTERWORTH_Q_DB,
+        rampMs,
+      );
     }
 
     /* ---- presence dip (the 1–5 kHz attention band) ---- */
     rampSmooth(ctx, g.presenceDip.frequency, Math.min(p.presenceDip.freq, fMax), rampMs);
+    // A `peaking` filter's Q is a *linear* Q natively, so this one is NOT
+    // converted. Mixing the two conventions up is the classic silent bug here.
     rampSmooth(ctx, g.presenceDip.Q, p.presenceDip.q, rampMs);
     rampSmooth(ctx, g.presenceDip.gain, p.presenceDip.gain, rampMs);
 
@@ -984,11 +1410,17 @@ export class DampenEngine {
     rampSmooth(ctx, g.driftDepth.gain, window.amplitude, rampMs);
     rampSmooth(ctx, g.driftOsc.frequency, p.drift.rate, rampMs);
 
-    /* ---- ambience ---- */
-    g.ambience.setParams(p.ambience, Math.max(rampMs, 0));
+    /* ---- ambience ----
+     * Policy gate, enforced here rather than in the UI: see
+     * `ambienceAllowedFor`. `p.ambience` keeps the user's choice so that it
+     * returns intact when they switch back to a local source. */
+    g.ambience.setParams(this.ambienceAllowed ? p.ambience : AMBIENCE_OFF, Math.max(rampMs, 0));
 
-    /* ---- output ---- */
-    rampSmooth(ctx, g.outputGain.gain, dbToLin(p.outputGain), rampMs);
+    /* ---- output ----
+     * A tripped runaway guard overrides the user's output gain until it is
+     * explicitly reset, so a feedback loop cannot be re-armed by a slider. */
+    const outTarget = this.runawayDucked ? 0 : dbToLin(p.outputGain);
+    rampSmooth(ctx, g.outputGain.gain, outTarget, rampMs);
     rampSmooth(ctx, g.inputGain.gain, 1, rampMs);
   }
 
@@ -1147,6 +1579,83 @@ export class DampenEngine {
    * (they are single-use). Captured streams have their tracks stopped, which
    * is what turns the browser's recording indicator off.
    */
+  /**
+   * Rebuild the `AudioContext` if the live one cannot serve the source we are
+   * about to attach.
+   *
+   * Two construction-time options can go stale: `sampleRate` (which must match
+   * the capture device — see `capture.ts`) and `latencyHint` (which follows
+   * the input mode). Neither can be changed on a live context, so the only
+   * remedy is a new one.
+   *
+   * This is called from `setSource` and nowhere else, deliberately: a source
+   * change is already a discontinuity, so rebuilding there is inaudible,
+   * whereas rebuilding the moment a mode button is pressed would drop audio
+   * that is still playing.
+   */
+  private async ensureCompatibleContext(): Promise<void> {
+    const ctx = this.ctx;
+    if (!ctx) return;
+
+    const rateMismatch =
+      this.desiredSampleRate !== null && Math.round(ctx.sampleRate) !== this.desiredSampleRate;
+    const hintMismatch =
+      this.builtLatencyHint !== null && this.builtLatencyHint !== this.wantedLatencyHint;
+    if (!rateMismatch && !hintMismatch) return;
+
+    this.teardownGraph();
+    const old = this.ctx;
+    this.ctx = null;
+    this.graphPromise = null;
+    this.builtLatencyHint = null;
+    if (old) {
+      forgetWorklets(old);
+      old.onstatechange = null;
+      if (old.state !== 'closed') {
+        try {
+          await old.close();
+        } catch {
+          /* already closing */
+        }
+      }
+    }
+  }
+
+  /**
+   * Fail soft when a capture device disappears mid-session.
+   *
+   * Unplugging an interface, or uninstalling a virtual driver while Dampen is
+   * running, ends the track. The stream then produces silence (or, on some
+   * platforms, nothing at all and a stalled graph), which is confusing rather
+   * than informative. So: ramp the output down cleanly, record a typed error
+   * and surface the error status. Nothing is thrown — this fires from a DOM
+   * event with nowhere to propagate to, and throwing towards the audio thread
+   * is never the answer.
+   */
+  private watchStreamForLoss(stream: MediaStream): void {
+    const handler = (): void => {
+      if (this.disposed) return;
+      const ctx = this.ctx;
+      const g = this.graph;
+      if (ctx && g) rampLinear(ctx, g.outputGain.gain, 0, BYPASS_FADE_MS);
+      this.lastError = new CaptureError('device-lost', captureErrorMessage('device-lost'));
+      this.setStatus('error');
+    };
+    for (const track of stream.getAudioTracks()) {
+      track.addEventListener('ended', handler);
+      this.streamLossCleanups.push(() => track.removeEventListener('ended', handler));
+    }
+  }
+
+  /** Forget a previous fatal error so a fresh source can run. */
+  private clearError(): void {
+    this.lastError = null;
+    if (this.statusValue === 'error') {
+      this.statusValue = 'idle';
+      this.syncStatusFromContext();
+    }
+  }
+
   private releaseSource(): void {
     if (this.bufferNode) {
       try {
@@ -1164,6 +1673,14 @@ export class DampenEngine {
       }
       this.sourceNode = null;
     }
+    for (const off of this.streamLossCleanups) {
+      try {
+        off();
+      } catch {
+        /* listener already gone */
+      }
+    }
+    this.streamLossCleanups = [];
     if (this.activeStream) {
       for (const track of this.activeStream.getTracks()) {
         try {
@@ -1174,5 +1691,6 @@ export class DampenEngine {
       }
       this.activeStream = null;
     }
+    this.captureSettings = null;
   }
 }

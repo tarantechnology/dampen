@@ -544,9 +544,14 @@ const presetTests: TestCase[] = [
         assertClose(r.bitcrush.mix, 0, 1e-6, `${p.id}: bitcrush bypassed`);
         assertClose(r.wowFlutter.wowDepth, 0, 1e-6, `${p.id}: no wow`);
         assertClose(r.wowFlutter.flutterDepth, 0, 1e-6, `${p.id}: no flutter`);
-        // The ambience bed is gated by level, which must be at or below the
-        // silent sentinel.
-        assert(r.ambience.level <= -90, `${p.id}: ambience must be silent, got ${r.ambience.level}`);
+        // The ambience bed must be inaudible: either the generator is off, or
+        // the level is at/below the silent sentinel. (`next-room` carries a
+        // level of -60 dB with `kind: 'none'`, which is silent by the first
+        // clause — the level is simply never read.)
+        assert(
+          r.ambience.kind === 'none' || r.ambience.level <= -90,
+          `${p.id}: ambience must be silent, got kind=${r.ambience.kind} level=${r.ambience.level}`,
+        );
       }
     },
   },

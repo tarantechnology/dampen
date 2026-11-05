@@ -5,31 +5,47 @@
  * `app/design/page.tsx` renders every component against these and imports
  * nothing from `lib/audio/**` or `lib/spotify/**`.
  *
- * ------------------------------------------------------------------------
- * next.config.ts — PLEASE ADD (I do not own that file).
+ * ========================================================================
+ * next.config.ts — ONE CHANGE NEEDED (I do not own that file)
+ * ========================================================================
  *
- * Spotify serves artwork from several CDN hosts. Album and profile art comes
- * from `i.scdn.co`, auto-generated playlist mosaics from `mosaic.scdn.co`,
- * and editorial/playlist covers from the regional `*.spotifycdn.com` pair.
- * The leading `**` wildcard covers subdomains, which is what we want here and
- * is scoped tightly enough by the fixed apex domain.
+ * Tailwind is currently not compiling at all, so every page renders
+ * unstyled. Turbopack infers its project root from the nearest lockfile,
+ * finds `/Users/taran/pnpm-lock.yaml` outside the repo, and the `*.css`
+ * rule therefore never matches `app/globals.css` — so
+ * `@tailwindcss/turbopack` never runs. The emitted stylesheet is 5.7 kB of
+ * raw passthrough (with "Unknown at rule: @theme / @utility" warnings)
+ * instead of 59 kB of compiled CSS.
  *
- *   const nextConfig: NextConfig = {
- *     // ...existing config
- *     images: {
- *       remotePatterns: [
- *         { protocol: 'https', hostname: '**.scdn.co', port: '', pathname: '/**', search: '' },
- *         { protocol: 'https', hostname: '**.spotifycdn.com', port: '', pathname: '/**', search: '' },
- *       ],
+ * Adding this block to `nextConfig` fixes it. Verified in both `next dev`
+ * and `next build`: 5,710 bytes -> 59,036 bytes, no warnings.
+ *
+ *   turbopack: {
+ *     root: __dirname,
+ *     rules: {
+ *       '*.css': {
+ *         loaders: ['@tailwindcss/turbopack'],
+ *         as: '*.css',
+ *       },
  *     },
- *   };
+ *   },
  *
- * Notes:
- *  - `images.qualities` can stay unset: nothing in the UI passes a `quality`
- *    prop, so the Next 16 default of `[75]` is all we need.
+ * `root` is the part that actually matters; the `rules` block was in the
+ * config earlier and has since been dropped, so both lines are listed.
+ * The documented alternative is a `postcss.config.mjs` using
+ * `@tailwindcss/postcss`, but that needs a dependency this project does not
+ * have, and the loader route works once the root is pinned.
+ *
+ * `images.remotePatterns` is already correct for every Spotify artwork host,
+ * so nothing is needed there. Two notes on how the UI uses next/image:
+ *  - `images.qualities` can stay unset: nothing passes a `quality` prop, so
+ *    the Next 16 default of `[75]` is all we need.
  *  - Nothing uses the deprecated `priority` prop; artwork that must not lazy
  *    load passes `loading="eager"` + `fetchPriority="high"` instead.
- * ------------------------------------------------------------------------
+ *  - `components/ui/Artwork.tsx` falls back to a deterministic procedural
+ *    cover on image error, so a host that is ever missed degrades rather
+ *    than breaks.
+ * ========================================================================
  */
 
 import type {
@@ -455,11 +471,29 @@ export const FIXTURE_TRACKS: SpotifyTrack[] = [
   }),
 ];
 
+/**
+ * Literal timestamps rather than `new Date(...)`: anything derived from the
+ * Date constructor at module scope counts as an unstable value during
+ * prerendering under Cache Components, and fixtures are not worth deferring
+ * a static shell for.
+ */
+const PLAYED_AT: string[] = [
+  '2026-11-04T18:40:00.000Z',
+  '2026-11-04T18:33:00.000Z',
+  '2026-11-04T18:26:00.000Z',
+  '2026-11-04T18:19:00.000Z',
+  '2026-11-04T18:12:00.000Z',
+  '2026-11-04T18:05:00.000Z',
+  '2026-11-04T17:58:00.000Z',
+  '2026-11-04T17:51:00.000Z',
+  '2026-11-04T17:44:00.000Z',
+  '2026-11-04T17:37:00.000Z',
+  '2026-11-04T17:30:00.000Z',
+  '2026-11-04T17:23:00.000Z',
+];
+
 export const FIXTURE_RECENTLY_PLAYED: SpotifyTrack[] = FIXTURE_TRACKS.slice(4, 16).map(
-  (t, i) => ({
-    ...t,
-    playedAt: new Date(Date.UTC(2026, 10, 4, 18, 40 - i * 7)).toISOString(),
-  }),
+  (t, i) => ({ ...t, playedAt: PLAYED_AT[i] }),
 );
 
 export const FIXTURE_TOP_TRACKS: SpotifyTrack[] = [

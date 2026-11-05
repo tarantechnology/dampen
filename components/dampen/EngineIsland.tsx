@@ -59,8 +59,12 @@ export function EngineIsland() {
   const dampen = useDampen();
   const extras = dampen as unknown as EngineExtras;
 
+  // The 20 Hz meter stream is parked in a ref rather than threaded through
+  // props, and mirrored in an effect so render stays pure.
   const metersRef = useRef<EngineMeters>(IDLE_METERS);
-  metersRef.current = dampen.meters ?? IDLE_METERS;
+  useEffect(() => {
+    metersRef.current = dampen.meters ?? IDLE_METERS;
+  }, [dampen.meters]);
   const getMeters = useCallback(() => metersRef.current, []);
   const getInputPeak = useCallback(() => metersRef.current.inputPeak, []);
 
@@ -170,10 +174,14 @@ export function EngineIsland() {
     publishDampen({ amount, bypass });
   }, [amount, bypass, publishDampen]);
 
+  // Latest-value refs for the keyboard commands, which run outside render and
+  // must not re-register every time the dial moves.
   const amountRef = useRef(amount);
-  amountRef.current = amount;
   const bypassRef = useRef(bypass);
-  bypassRef.current = bypass;
+  useEffect(() => {
+    amountRef.current = amount;
+    bypassRef.current = bypass;
+  }, [amount, bypass]);
 
   useEffect(() => {
     registerActions({

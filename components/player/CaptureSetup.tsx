@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import {
   Check,
   Copy,
@@ -71,6 +71,10 @@ const INSTALL: Record<Platform, Install> = {
     helpLabel: 'PulseAudio virtual sink docs',
   },
 };
+
+/** `navigator` never changes under us, so there is nothing to subscribe to. */
+const subscribeNever = () => () => {};
+const serverPlatform = (): Platform => 'mac';
 
 export function detectPlatform(): Platform {
   if (typeof navigator === 'undefined') return 'mac';
@@ -164,14 +168,15 @@ export function CaptureInputMeter({
 }: CaptureInputMeterProps) {
   const fillRef = useRef<HTMLDivElement | null>(null);
   const peakRef = useRef<HTMLDivElement | null>(null);
-  const [state, setState] = useState<SignalState>('closed');
-  const stateRef = useRef<SignalState>('closed');
+  // `live` is only ever written from inside the rAF loop. The closed state is
+  // derived, so shutting the stream never needs a cascading render.
+  const [live, setLive] = useState<SignalState>('no-signal');
+  const liveRef = useRef<SignalState>('no-signal');
+  const state: SignalState = open ? live : 'closed';
 
   useEffect(() => {
     if (!open) {
-      stateRef.current = 'closed';
-      setState('closed');
-      onStateChange?.('closed');
+      liveRef.current = 'no-signal';
       if (fillRef.current) fillRef.current.style.transform = 'scaleX(0)';
       if (peakRef.current) peakRef.current.style.opacity = '0';
       return;
@@ -212,9 +217,9 @@ export function CaptureInputMeter({
       // routing is wrong. The difference matters, so it is stated plainly.
       const next: SignalState =
         now - lastLoud < 1500 ? 'live' : db > -82 ? 'silent' : 'no-signal';
-      if (next !== stateRef.current) {
-        stateRef.current = next;
-        setState(next);
+      if (next !== liveRef.current) {
+        liveRef.current = next;
+        setLive(next);
         onStateChange?.(next);
       }
 
@@ -385,15 +390,16 @@ export function CaptureSetup({
   platform,
   className,
 }: CaptureSetupProps) {
-  const [detected, setDetected] = useState<Platform>(platform ?? 'mac');
-  useEffect(() => {
-    if (!platform) setDetected(detectPlatform());
-  }, [platform]);
+  // `navigator` is an external store: read it with the hook built for that, so
+  // the server snapshot ('mac') and the client snapshot can differ without a
+  // hydration mismatch and without a setState-in-effect round trip.
+  const detected = useSyncExternalStore(subscribeNever, detectPlatform, serverPlatform);
   const os = platform ?? detected;
   const install = INSTALL[os];
 
-  const [signal, setSignal] = useState<SignalState>('closed');
-  const onSignalChange = useCallback((s: SignalState) => setSignal(s), []);
+  const [reported, setReported] = useState<SignalState>('no-signal');
+  const signal: SignalState = isCapturing ? reported : 'closed';
+  const onSignalChange = useCallback((s: SignalState) => setReported(s), []);
 
   const virtual = devices.filter((d) => d.likelyVirtual);
   const selected = devices.find((d) => d.deviceId === selectedDeviceId) ?? null;

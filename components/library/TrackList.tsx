@@ -15,20 +15,27 @@ const OVERSCAN = 6;
 
 export type TrackMeta = 'album' | 'added' | 'played' | 'none';
 
-function relativeDate(iso: string | undefined): string {
+/**
+ * Added/played dates are rendered absolutely, not as "3d ago".
+ *
+ * Two reasons. `Date.now()` during render is non-deterministic, and under
+ * Cache Components that makes the row un-prerenderable — the static shell
+ * would have to be deferred for a date stamp. And a fixed date does not go
+ * stale in a tab left open for a working day, which is exactly how this app
+ * gets used.
+ */
+const DATE_FORMAT = new Intl.DateTimeFormat('en', {
+  month: 'short',
+  day: 'numeric',
+  year: 'numeric',
+  timeZone: 'UTC',
+});
+
+function stampDate(iso: string | undefined): string {
   if (!iso) return '';
-  const then = Date.parse(iso);
-  if (Number.isNaN(then)) return '';
-  const days = Math.floor((Date.now() - then) / 86_400_000);
-  if (days <= 0) {
-    const hours = Math.floor((Date.now() - then) / 3_600_000);
-    if (hours <= 0) return 'just now';
-    return `${hours}h ago`;
-  }
-  if (days === 1) return 'yesterday';
-  if (days < 30) return `${days}d ago`;
-  if (days < 365) return `${Math.floor(days / 30)}mo ago`;
-  return `${Math.floor(days / 365)}y ago`;
+  const parsed = Date.parse(iso);
+  if (Number.isNaN(parsed)) return '';
+  return DATE_FORMAT.format(parsed);
 }
 
 /* ------------------------------------------------------------------ *
@@ -63,9 +70,9 @@ const TrackRow = memo(function TrackRow({
     meta === 'album'
       ? track.album.name
       : meta === 'added'
-        ? relativeDate(track.addedAt)
+        ? stampDate(track.addedAt)
         : meta === 'played'
-          ? relativeDate(track.playedAt)
+          ? stampDate(track.playedAt)
           : '';
 
   return (
@@ -200,10 +207,14 @@ export function TrackList({
     return () => ro.disconnect();
   }, []);
 
-  // Reset the cursor when the underlying list changes identity.
-  useEffect(() => {
+  // Reset the cursor when the underlying list changes identity. Adjusting
+  // state during render is the documented pattern for this; doing it in an
+  // effect would paint one frame with a stale cursor first.
+  const [lastTracks, setLastTracks] = useState(tracks);
+  if (lastTracks !== tracks) {
+    setLastTracks(tracks);
     setCursor(-1);
-  }, [tracks]);
+  }
 
   const onScroll = useCallback(() => {
     const el = viewportRef.current;

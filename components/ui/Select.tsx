@@ -55,12 +55,16 @@ export function Select<T extends string>({
     return () => document.removeEventListener('pointerdown', onDown);
   }, [open]);
 
+  // Focus is a DOM side effect, so it belongs in an effect. The cursor is
+  // positioned by whoever opens the list, not by a cascading render.
   useEffect(() => {
-    if (open) {
-      setCursor(Math.max(0, options.findIndex((o) => o.value === value)));
-      listRef.current?.focus();
-    }
-  }, [open, options, value]);
+    if (open) listRef.current?.focus();
+  }, [open]);
+
+  const openList = () => {
+    setCursor(Math.max(0, options.findIndex((o) => o.value === value)));
+    setOpen(true);
+  };
 
   const commit = (index: number) => {
     const option = options[index];
@@ -116,11 +120,11 @@ export function Select<T extends string>({
         aria-expanded={open}
         aria-labelledby={hideLabel ? undefined : `${uid}-label`}
         aria-label={hideLabel ? label : undefined}
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => (open ? setOpen(false) : openList())}
         onKeyDown={(e) => {
           if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
             e.preventDefault();
-            setOpen(true);
+            openList();
           }
         }}
         className={cn(

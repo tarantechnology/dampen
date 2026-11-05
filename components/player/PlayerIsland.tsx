@@ -41,10 +41,14 @@ export function PlayerIsland() {
     publishPlayback({ artworkUrl, currentUri, isPlaying });
   }, [artworkUrl, currentUri, isPlaying, publishPlayback]);
 
+  // Latest-value refs so the keyboard commands can seek and mute without
+  // re-registering on every position tick.
   const positionRef = useRef(0);
-  positionRef.current = state?.position ?? 0;
-  const volumeRef = useRef(state?.volume ?? 0.7);
-  volumeRef.current = state?.volume ?? volumeRef.current;
+  const volumeRef = useRef(0.7);
+  useEffect(() => {
+    positionRef.current = state?.position ?? 0;
+    if (typeof state?.volume === 'number') volumeRef.current = state.volume;
+  }, [state?.position, state?.volume]);
 
   const onToggleMute = useCallback(() => {
     setMuted((wasMuted) => {
