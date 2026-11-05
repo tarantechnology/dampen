@@ -276,12 +276,13 @@ function SettingsBody() {
               />
             }
           />
-          <Row
-            label="Output level"
-            trailing={<span className="num text-[13px] text-t3">{formatDb(dampen.params.outputGain)}</span>}
-          />
-          <div className="px-3.5 pb-3">
+          <div className="px-3.5 py-2.5">
+            <div className="flex items-baseline justify-between gap-3">
+              <span className="text-[15px] text-t1">Output level</span>
+              <span className="num text-[12.5px] text-t3">{formatDb(dampen.params.outputGain)}</span>
+            </div>
             <Slider
+              className="mt-0.5"
               label="Output level"
               min={-24}
               max={12}
@@ -306,7 +307,7 @@ function SettingsBody() {
               analysers={dampen.analysers}
               filterResponse={dampen.filterResponse}
               amount={dampen.params.amount}
-              className="h-[120px] w-full overflow-hidden rounded-[10px] bg-fill-1"
+              className="h-[120px] w-full overflow-hidden rounded-[10px] bg-[#0b0b0c]"
             />
           </div>
           <Meters getMeters={getMeters} running={running} />

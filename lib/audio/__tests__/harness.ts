@@ -45,6 +45,28 @@ export class AssertionError extends Error {
   }
 }
 
+/**
+ * Thrown to abandon a case as *skipped* rather than failed, once it is already
+ * running.
+ *
+ * `TestCase.skip` is decided at module load, which is too early for anything
+ * that depends on runtime state — "is the audio context actually running?"
+ * can only be answered after the engine has started. Reporting such a case as
+ * a failure would be wrong (nothing is broken) and silently passing it would
+ * be worse (the assertion never ran).
+ */
+export class SkippedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SkippedError';
+  }
+}
+
+/** Abandon the running case as skipped. */
+export function skipTest(reason: string): never {
+  throw new SkippedError(reason);
+}
+
 export function assert(condition: boolean, message: string): void {
   if (!condition) throw new AssertionError(message);
 }
@@ -103,6 +125,10 @@ export async function runCases(cases: readonly TestCase[]): Promise<TestReport> 
       await c.run();
       results.push({ name: c.name, status: 'pass', ms: now() - t0 });
     } catch (err) {
+      if (err instanceof SkippedError) {
+        results.push({ name: c.name, status: 'skip', detail: err.message, ms: now() - t0 });
+        continue;
+      }
       results.push({
         name: c.name,
         status: 'fail',

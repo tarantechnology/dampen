@@ -182,6 +182,8 @@ interface DampenStore {
   latency: LatencyReport;
   /** The last fatal engine or capture error, as a message. */
   error: string | null;
+  /** True when the browser needs a user gesture before audio can run. */
+  needsGesture: boolean;
 }
 
 const useStore = create<DampenStore>(() => ({
@@ -210,6 +212,7 @@ const useStore = create<DampenStore>(() => ({
   runawayTripped: false,
   latency: NO_LATENCY,
   error: null,
+  needsGesture: false,
 }));
 
 /* ------------------------------------------------------------------ *
@@ -286,6 +289,7 @@ function syncFromEngine(eng: DampenEngine): void {
     outputSelectable: eng.outputSelectable,
     outputAutoSelected: eng.outputAutoSelected,
     error: eng.error?.message ?? null,
+    needsGesture: eng.needsGesture,
   });
 }
 
@@ -588,6 +592,12 @@ export interface UseDampen {
   latency: LatencyReport;
   /** The last fatal error, as a message. */
   error: string | null;
+  /**
+   * True when audio is ready but the browser is waiting for a user gesture.
+   * Pair it with `status === 'suspended'` to tell "click to start" apart from
+   * "the user paused it".
+   */
+  needsGesture: boolean;
 }
 
 /**
@@ -620,6 +630,7 @@ export function useDampen(): UseDampen {
   const runawayTripped = useStore((s) => s.runawayTripped);
   const latency = useStore((s) => s.latency);
   const error = useStore((s) => s.error);
+  const needsGesture = useStore((s) => s.needsGesture);
 
   /*
    * Device hot-plug. The user is very likely to install BlackHole *while
@@ -738,6 +749,7 @@ export function useDampen(): UseDampen {
       resetRunawayGuard,
       latency,
       error,
+      needsGesture,
       setParam,
       applyPreset,
       setAmount,
@@ -768,6 +780,7 @@ export function useDampen(): UseDampen {
       runawayTripped,
       latency,
       error,
+      needsGesture,
     ],
   );
 }

@@ -352,6 +352,10 @@ export class DampenEngine {
   private ctx: AudioContext | null = null;
   private graph: Graph | null = null;
   private graphPromise: Promise<void> | null = null;
+  /** In-flight `start()`, so concurrent callers share one attempt. */
+  private startPromise: Promise<void> | null = null;
+  /** True when `resume()` did not take, i.e. a user gesture is required. */
+  private gestureNeeded = false;
   private worklets: WorkletStatus | null = null;
 
   private state: DampenParams = sanitizeParams(DEFAULT_PARAMS, DEFAULT_PARAMS);
@@ -468,6 +472,24 @@ export class DampenEngine {
   /** The last fatal error, if `status === 'error'`. */
   get error(): Error | null {
     return this.lastError;
+  }
+
+  /**
+   * True when the context exists but the browser will not let it run until the
+   * page gets a user gesture.
+   *
+   * `EngineStatus` is a frozen contract with no `'needs-gesture'` member, and
+   * `'suspended'` is the honest mapping — the context really is suspended. But
+   * "suspended because the user paused" and "suspended because the autoplay
+   * policy is waiting for a click" need different UI, so the distinction is
+   * exposed here rather than smuggled into the status.
+   *
+   * Note that `AudioContext.resume()` does not reject when it is blocked: it
+   * returns a promise that stays pending indefinitely. This flag is set when
+   * that wait times out.
+   */
+  get needsGesture(): boolean {
+    return this.gestureNeeded;
   }
 
   /** Pre- and post-DSP analysers for the visualiser. Null until started. */
@@ -759,32 +781,92 @@ export class DampenEngine {
    */
   async start(): Promise<void> {
     if (this.disposed) return;
-    await this.ensureGraph();
-    const ctx = this.ctx;
-    if (!ctx) return;
-    if (ctx.state !== 'running') {
-      try {
-        /*
-         * Bounded wait — see RESUME_TIMEOUT_MS. The timeout is not an error
-         * path: it simply means the context is still suspended, which
-         * `syncStatusFromContext` below will report honestly so the UI can
-         * prompt for another click.
-         */
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        await Promise.race([
-          ctx.resume(),
-          new Promise<void>((resolve) => {
-            timer = setTimeout(resolve, RESUME_TIMEOUT_MS);
-          }),
-        ]);
-        if (timer !== undefined) clearTimeout(timer);
-      } catch (err) {
-        // An outright rejection (a closed context, a policy refusal that does
-        // reject). Not fatal: the user can click again.
-        this.lastError = err instanceof Error ? err : new Error(String(err));
+    /*
+     * Concurrent calls share one attempt.
+     *
+     * Not a micro-optimisation — a correctness requirement. Without it the
+     * second caller returns as soon as it reaches an `await`, while the first
+     * is still mid-build, and observes the engine in its `'initializing'`
+     * state with `analysers === null`. Two components mounting at once, a
+     * React StrictMode double-invoked effect, or an impatient double-click all
+     * produce exactly that. (Reproduced: it is what made two of this
+     * project's own browser tests fail when the suite was run twice
+     * concurrently from a `useEffect`.)
+     *
+     * Coalescing means every caller awaits the same completion and therefore
+     * every caller sees the same settled state.
+     */
+    if (this.startPromise) return this.startPromise;
+    const attempt = this.runStart().finally(() => {
+      this.startPromise = null;
+    });
+    this.startPromise = attempt;
+    return attempt;
+  }
+
+  /**
+   * One `start()` attempt.
+   *
+   * **Post-condition: the status is never `'initializing'` or `'idle'` when
+   * this resolves.** It is `'running'`, `'suspended'` (the context exists but
+   * the autoplay policy has not let it run — see {@link needsGesture}) or
+   * `'error'`. A UI that sees an indefinite `'initializing'` has no action
+   * available to it and looks dead, which is the worst possible first run.
+   */
+  private async runStart(): Promise<void> {
+    try {
+      await this.ensureGraph();
+      if (this.disposed) return;
+
+      const ctx = this.ctx;
+      if (!ctx) {
+        // The graph build failed and already recorded why. Make sure the state
+        // is terminal even if it somehow was not.
+        if (this.statusValue !== 'error') {
+          this.lastError ??= new Error('The audio graph could not be built.');
+          this.setStatus('error');
+        }
+        return;
+      }
+
+      if (ctx.state !== 'running') {
+        try {
+          /*
+           * Bounded wait — see RESUME_TIMEOUT_MS. The timeout is not an error
+           * path: it means the context is still suspended, which
+           * `syncStatusFromContext` reports honestly so the UI can prompt for
+           * a click.
+           */
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          const timedOut = await Promise.race([
+            ctx.resume().then(() => false),
+            new Promise<boolean>((resolve) => {
+              timer = setTimeout(() => resolve(true), RESUME_TIMEOUT_MS);
+            }),
+          ]);
+          if (timer !== undefined) clearTimeout(timer);
+          if (timedOut) this.gestureNeeded = true;
+        } catch (err) {
+          // An outright rejection (a closed context, or a policy refusal that
+          // does reject rather than hang). Not fatal: the user can click again.
+          this.lastError = err instanceof Error ? err : new Error(String(err));
+          this.gestureNeeded = true;
+        }
+      }
+
+      if (ctx.state === 'running') this.gestureNeeded = false;
+      this.syncStatusFromContext();
+    } finally {
+      // Belt and braces on the post-condition: whatever happened above, the
+      // engine must not be left mid-flight.
+      if (!this.disposed && (this.statusValue === 'initializing' || this.statusValue === 'idle')) {
+        if (this.ctx) this.syncStatusFromContext();
+        if (this.statusValue === 'initializing' || this.statusValue === 'idle') {
+          this.lastError ??= new Error('Audio start did not complete.');
+          this.setStatus('error');
+        }
       }
     }
-    this.syncStatusFromContext();
   }
 
   /** Suspend the context without tearing anything down. */
@@ -1032,6 +1114,21 @@ export class DampenEngine {
    * exactly 1, contributing 0 dB — which is why all four stages can be
    * included unconditionally and the curve is automatically correct for any
    * stage count.
+   *
+   * ## This reads flat while the context is suspended
+   *
+   * `getFrequencyResponse` is specified to use the parameter values "sampled
+   * for the current processing block". A suspended context has no processing
+   * blocks, so scheduled automation is never sampled and every filter still
+   * reports its *construction* value — and since this engine constructs every
+   * node neutral (so the first rendered block is transparent), the curve comes
+   * back as a flat 0 dB whatever has been set.
+   *
+   * Measured in Chrome 156: with the default autoplay policy and no user
+   * gesture, every parameter change reads as 0 dB here until `start()` has
+   * actually got the context running. So a visualiser should expect the curve
+   * to be flat until playback begins; it is not worth special-casing, but it
+   * is worth not mistaking for a bug.
    */
   getFilterResponse(freqs: Float32Array): Float32Array {
     const n = freqs.length;
@@ -1274,7 +1371,12 @@ export class DampenEngine {
       // Loading is advisory and never rejects; whatever did not load is simply
       // not built, and the corresponding stage is permanently neutral.
       this.worklets = await workletsReady(ctx);
-      if (this.disposed) return;
+      if (this.disposed) {
+        // Disposed mid-build. `'initializing'` is not a resting state, so step
+        // back to idle rather than stranding it.
+        this.setStatus('idle');
+        return;
+      }
 
       this.graph = this.assemble(ctx, this.worklets);
       // rampMs 0: nothing is connected to a source yet, so there is nothing to

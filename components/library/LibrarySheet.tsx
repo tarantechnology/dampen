@@ -24,7 +24,7 @@ export function LibrarySheet() {
       width={330}
       bodyClassName="min-h-0 flex-1 overflow-hidden"
     >
-      {open ? <LibraryIsland showBrand={false} /> : null}
+      {open ? <LibraryIsland showBrand={false} className="bg-bg" /> : null}
     </Sheet>
   );
 }

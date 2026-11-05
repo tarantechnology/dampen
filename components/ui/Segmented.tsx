@@ -68,7 +68,7 @@ export function Segmented<T extends string>({
               'relative z-10 h-8 min-w-0 truncate rounded-[8px] px-2.5 text-[13px] font-medium',
               'transition-colors duration-150',
               selected
-                ? 'bg-bg text-t1 shadow-[0_1px_3px_rgba(0,0,0,0.14)]'
+                ? 'bg-raised text-t1 shadow-[0_1px_3px_rgba(0,0,0,0.16)]'
                 : 'text-t2 hover:text-t1',
             )}
           >

@@ -12,6 +12,7 @@ import { TrackList } from './TrackList';
 export interface LibraryIslandProps {
   /** False inside the mobile sheet, where the sheet header carries the name. */
   showBrand?: boolean;
+  className?: string;
 }
 
 /**
@@ -21,7 +22,7 @@ export interface LibraryIslandProps {
  * registry, read with `getState()` inside the handler. That is the whole
  * reason dragging the Dampen control cannot re-render a track list.
  */
-export function LibraryIsland({ showBrand = true }: LibraryIslandProps) {
+export function LibraryIsland({ showBrand = true, className }: LibraryIslandProps) {
   const auth = useAuth();
   const library = useLibrary();
 
@@ -56,6 +57,7 @@ export function LibraryIsland({ showBrand = true }: LibraryIslandProps) {
 
   return (
     <Sidebar
+      className={className}
       showBrand={showBrand}
       view={view}
       onViewChange={(next) => {

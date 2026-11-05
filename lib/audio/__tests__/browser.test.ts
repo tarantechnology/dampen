@@ -29,7 +29,7 @@ import { listOutputDevices, pickPhysicalOutput } from '../capture';
 import { BUTTERWORTH_Q_DB, BUTTERWORTH_Q_LINEAR } from '../dsp';
 import { DEFAULT_PARAMS, getPreset, PRESETS, resolveParams } from '../presets';
 import { workletsReady } from '../worklets';
-import { assert, assertClose, assertEqual, type TestCase } from './harness';
+import { assert, assertClose, assertEqual, skipTest, type TestCase } from './harness';
 
 const HAS_WEB_AUDIO =
   typeof window !== 'undefined' &&
@@ -65,6 +65,35 @@ function worstDeviation(resp: Float32Array, freqs: Float32Array): { db: number; 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 /**
+ * Abandon a case that needs the graph to be *rendering*, not merely built.
+ *
+ * `BiquadFilterNode.getFrequencyResponse` is specified to use the parameter
+ * values "sampled for the current processing block". A suspended context has
+ * no processing blocks, so scheduled automation is never sampled and every
+ * filter still reports its construction value — which, because this engine now
+ * constructs every node neutral, means **the response reads a flat 0 dB no
+ * matter what parameters have been set**.
+ *
+ * Measured directly: with Chrome's default autoplay policy and no user
+ * gesture, the context stays suspended and all seven response-measuring cases
+ * below read 0 dB. That is the platform behaving as documented, not a
+ * regression, so they skip with this reason rather than failing. Give the page
+ * a gesture (or run Chrome with `--autoplay-policy=no-user-gesture-required`)
+ * and they run for real.
+ *
+ * Worth knowing beyond the tests: the UI's live response curve will read flat
+ * until audio actually starts, for exactly this reason.
+ */
+function requireRendering(eng: DampenEngine): void {
+  if (eng.status === 'running') return;
+  skipTest(
+    `needs a rendering context: status is "${eng.status}"` +
+      (eng.needsGesture ? ' (the autoplay policy is waiting for a user gesture)' : '') +
+      ' — getFrequencyResponse only reflects parameters while blocks are being rendered',
+  );
+}
+
+/**
  * Settling time after a parameter change before the response is read.
  *
  * Covers the `LowpassStage` allpass/lowpass type switch, which is deliberately
@@ -72,15 +101,32 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
  */
 const SETTLE_MS = 220;
 
-/** One engine, shared by the cases, built on first use and disposed at the end. */
-let shared: DampenEngine | null = null;
+/**
+ * One engine, shared by the cases.
+ *
+ * The **promise** is memoised, not the instance. Memoising the instance looks
+ * equivalent and is not: the assignment happens before `await start()`, so a
+ * second concurrent caller sees a non-null engine and returns it while it is
+ * still mid-build — observing `status === 'initializing'` and
+ * `analysers === null`. That is not hypothetical; `/selftest` auto-runs this
+ * suite from a `useEffect`, which React invokes twice, so the suite really did
+ * run twice concurrently and really did fail on exactly those two assertions.
+ *
+ * (`DampenEngine.start()` now coalesces concurrent calls itself, so this is
+ * belt-and-braces — but a test helper that races is a bad harness regardless
+ * of how forgiving the thing under test is.)
+ */
+let sharedPromise: Promise<DampenEngine> | null = null;
 
 async function engine(): Promise<DampenEngine> {
-  if (!shared) {
-    shared = new DampenEngine();
-    await shared.start();
+  if (!sharedPromise) {
+    sharedPromise = (async () => {
+      const eng = new DampenEngine();
+      await eng.start();
+      return eng;
+    })();
   }
-  return shared;
+  return sharedPromise;
 }
 
 function browserCase(name: string, run: () => void | Promise<void>): TestCase {
@@ -100,6 +146,44 @@ const setupCases: TestCase[] = [
       `unexpected status ${eng.status}: ${eng.error?.message ?? ''}`,
     );
     assert(eng.analysers !== null, 'no analysers');
+  }),
+
+  browserCase('browser: start() settles to a terminal status, never initializing', async () => {
+    const eng = await engine();
+    // The contract: after start() resolves there is always something the UI
+    // can do. 'initializing' offers no action and reads as a dead app.
+    assert(
+      eng.status === 'running' || eng.status === 'suspended' || eng.status === 'error',
+      `status must be terminal, got "${eng.status}"`,
+    );
+    assert(eng.status !== 'initializing' && eng.status !== 'idle', 'not mid-flight');
+    // And if it is suspended, the reason must be legible.
+    if (eng.status === 'suspended') {
+      assertEqual(typeof eng.needsGesture, 'boolean', 'needsGesture should say why');
+    }
+  }),
+
+  browserCase('browser: concurrent start() calls all observe a built graph', async () => {
+    // The exact shape that broke /selftest: several callers racing start().
+    // Every one of them must see the finished engine, not a half-built one.
+    const eng = new DampenEngine();
+    const views = await Promise.all(
+      [0, 1, 2, 3].map(async () => {
+        await eng.start();
+        return { status: eng.status, hasAnalysers: eng.analysers !== null };
+      }),
+    );
+    try {
+      for (const [i, v] of views.entries()) {
+        assert(
+          v.status !== 'initializing' && v.status !== 'idle',
+          `caller ${i} saw a mid-flight status "${v.status}"`,
+        );
+        assert(v.hasAnalysers, `caller ${i} saw no analysers`);
+      }
+    } finally {
+      eng.dispose();
+    }
   }),
 
   browserCase('browser: analysers are 2048-point with 0.8 smoothing', async () => {
@@ -138,6 +222,7 @@ const setupCases: TestCase[] = [
 const filterCases: TestCase[] = [
   browserCase('browser: DEFAULT_PARAMS is flat to 0.05 dB, 20 Hz to 20 kHz', async () => {
     const eng = await engine();
+    requireRendering(eng);
     eng.setAllParams(DEFAULT_PARAMS, 0);
     await sleep(SETTLE_MS);
     const freqs = grid();
@@ -153,6 +238,7 @@ const filterCases: TestCase[] = [
       `browser: stages = ${stages} is an order-${stages * 2} Butterworth, -3.01 dB at the stated cutoff`,
       async () => {
         const eng = await engine();
+        requireRendering(eng);
         eng.setAllParams(
           { ...DEFAULT_PARAMS, lowpass: { freq: 1000, q: BUTTERWORTH_Q_LINEAR, stages: stages as 1 | 2 | 3 | 4 } },
           0,
@@ -173,6 +259,7 @@ const filterCases: TestCase[] = [
 
   browserCase('browser: reopening the cutoff returns the cascade to flat', async () => {
     const eng = await engine();
+    requireRendering(eng);
     // Close it hard first, so all four stages are live lowpasses...
     eng.setAllParams(
       { ...DEFAULT_PARAMS, lowpass: { freq: 400, q: BUTTERWORTH_Q_LINEAR, stages: 4 } },
@@ -193,6 +280,7 @@ const filterCases: TestCase[] = [
 
   browserCase('browser: every preset at amount 0 is flat', async () => {
     const eng = await engine();
+    requireRendering(eng);
     const freqs = grid();
     for (const p of PRESETS) {
       eng.setAllParams(resolveParams(p, 0), 0);
@@ -207,6 +295,7 @@ const filterCases: TestCase[] = [
 
   browserCase('browser: every preset at amount 1 has a finite, sane response', async () => {
     const eng = await engine();
+    requireRendering(eng);
     const freqs = grid();
     for (const p of PRESETS) {
       eng.setAllParams(resolveParams(p, 1), 0);
@@ -229,6 +318,7 @@ const filterCases: TestCase[] = [
 
   browserCase('browser: next-room’s +3 dB coincidence leak is really there', async () => {
     const eng = await engine();
+    requireRendering(eng);
     const preset = getPreset('next-room');
     assert(preset !== undefined, 'preset missing');
     if (!preset) return;
@@ -323,6 +413,7 @@ const runtimeCases: TestCase[] = [
 
   browserCase('browser: a NaN storm leaves the graph alive', async () => {
     const eng = await engine();
+    requireRendering(eng);
     // Everything a buggy caller could possibly do at once. A single NaN
     // reaching an AudioParam makes its node emit NaN for the lifetime of the
     // context, with no error — so this is the most important robustness case
@@ -442,7 +533,12 @@ const runtimeCases: TestCase[] = [
   }),
 
   browserCase('browser: dispose tears everything down', async () => {
-    const eng = await engine();
+    // A dedicated engine, not the shared one: two concurrent runs of this
+    // suite would otherwise have one disposing the context the other is still
+    // asserting against.
+    const eng = new DampenEngine();
+    await eng.start();
+    assert(eng.analysers !== null, 'should have built a graph to tear down');
     eng.dispose();
     assertEqual(eng.status, 'idle', 'status after dispose');
     assertEqual(eng.analysers, null, 'analysers released');
@@ -452,7 +548,6 @@ const runtimeCases: TestCase[] = [
     eng.dispose();
     const m = eng.getMeters();
     assert(Number.isFinite(m.outputRms), 'meters still answer after dispose');
-    shared = null;
   }),
 ];
 

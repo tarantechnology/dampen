@@ -26,6 +26,18 @@ export function EngineIsland() {
   const publishDampen = useUIStore((s) => s.publishDampen);
   const registerActions = useUIStore((s) => s.registerActions);
 
+  /*
+   * Capture is the path that can actually filter Spotify, so it is the
+   * default. Set once, from the island that is always mounted — the settings
+   * sheet is where you change it, but it must not be where you discover it.
+   */
+  const chosenMode = useRef(false);
+  useEffect(() => {
+    if (chosenMode.current) return;
+    chosenMode.current = true;
+    dampen.setInputMode('capture');
+  }, [dampen]);
+
   /* Mirrored out purely so the artwork filter can follow the macro. */
   useEffect(() => {
     publishDampen({ amount, bypass });

@@ -33,6 +33,10 @@
 
   /* Reads on a `--text-1` fill — the play button's glyph. */
   --invert: #ffffff;
+  /* A surface that sits ABOVE a fill — the segmented control's slug. It has
+     to be lighter than its track in dark mode and lighter in light mode too,
+     which a single translucent value cannot do. */
+  --raised: #ffffff;
   --scrim: rgba(0, 0, 0, 0.22);
 
   --accent: hsl(222 14% 42%);
@@ -64,6 +68,7 @@
     --text-3: rgba(255, 255, 255, 0.4);
 
     --invert: #000000;
+    --raised: rgba(255, 255, 255, 0.17);
     --scrim: rgba(0, 0, 0, 0.6);
 
     --accent: hsl(222 10% 72%);
@@ -92,6 +97,7 @@
   --text-3: rgba(255, 255, 255, 0.4);
 
   --invert: #000000;
+  --raised: rgba(255, 255, 255, 0.17);
   --scrim: rgba(0, 0, 0, 0.6);
 
   --accent: hsl(222 10% 72%);
@@ -117,6 +123,7 @@
   --color-t3: var(--text-3);
 
   --color-invert: var(--invert);
+  --color-raised: var(--raised);
   --color-accent: var(--accent);
   --color-accent-ink: var(--accent-ink);
   --color-accent-soft: var(--accent-soft);
@@ -163,7 +170,6 @@ body {
   :focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 3px;
-    border-radius: 4px;
   }
   button,
   [role="button"],
