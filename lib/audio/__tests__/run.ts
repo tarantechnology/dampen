@@ -15,13 +15,16 @@
  * `tsconfig.json` (no `allowImportingTsExtensions`) does not permit. `jiti` it
  * is.
  *
- * Exits non-zero if anything failed, so it is usable from CI as-is.
+ * Exits non-zero if anything failed, so it is usable from CI as-is. The last
+ * two suites need a real browser audio stack and report as *skipped* here;
+ * run them with `runSelfTest()` from `lib/audio/selftest.ts` in the page.
  */
 
 import { formatReport, runCases } from './harness';
 import { PURE_TESTS } from './dsp.test';
 import { CAPTURE_TESTS } from './capture.test';
 import { OFFLINE_TESTS } from './offline.test';
+import { BROWSER_TESTS } from './browser.test';
 
 async function main(): Promise<void> {
   let failed = 0;
@@ -30,6 +33,7 @@ async function main(): Promise<void> {
     ['pure DSP (no AudioContext)', PURE_TESTS],
     ['filters, guard, capture + policy', CAPTURE_TESTS],
     ['Web Audio (OfflineAudioContext)', OFFLINE_TESTS],
+    ['engine integration (live AudioContext)', BROWSER_TESTS],
   ] as const) {
     const report = await runCases(cases);
     console.log(`\n${title}\n${formatReport(report)}`);

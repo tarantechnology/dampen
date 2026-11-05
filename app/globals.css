@@ -1,193 +1,240 @@
 @import "tailwindcss";
 
-/* ------------------------------------------------------------------ *
- * Dampen — the dimly lit studio.
+/* ==================================================================== *
+ * Dampen — tokens
  *
- * Ground is near-black but never #000, so panels can sit *above* it and
- * the album-art bloom has somewhere to go. Everything above the ground is
- * built from translucent white so a single backdrop tint carries through
- * the whole stack.
- * ------------------------------------------------------------------ */
+ * Two rules decide how everything looks:
+ *
+ *   1. Elevation comes from a translucent FILL, never from a border.
+ *      Hairlines exist only where two scrolling regions genuinely meet.
+ *   2. Hierarchy comes from text opacity and spacing, never from boxes.
+ *
+ * The accent is not authored here. `components/ui/accent.ts` samples the
+ * album artwork and writes `--accent` / `--accent-ink` / `--accent-soft`
+ * onto <html> at runtime, clamped into a band that stays legible on both
+ * grounds. The values below are the neutral fallback for "no artwork".
+ * ==================================================================== */
 
 :root {
+  color-scheme: light;
+
+  --bg: #ffffff;
+  --bg-sunken: #f7f7f8;
+
+  --fill-1: rgba(0, 0, 0, 0.045);
+  --fill-2: rgba(0, 0, 0, 0.075);
+  --fill-3: rgba(0, 0, 0, 0.12);
+
+  --hairline: rgba(0, 0, 0, 0.09);
+
+  --text-1: rgba(0, 0, 0, 0.92);
+  --text-2: rgba(0, 0, 0, 0.55);
+  --text-3: rgba(0, 0, 0, 0.36);
+
+  /* Reads on a `--text-1` fill — the play button's glyph. */
+  --invert: #ffffff;
+  --scrim: rgba(0, 0, 0, 0.22);
+
+  --accent: hsl(222 14% 42%);
+  --accent-ink: #ffffff;
+  --accent-soft: hsl(222 14% 42% / 0.14);
+  --accent-tint: hsl(222 14% 42% / 0.07);
+
+  --danger: hsl(2 70% 44%);
+
+  /* The macro, 0..1. Written imperatively; drives the artwork filter. */
+  --dampen: 0;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+
+    --bg: #000000;
+    --bg-sunken: #0b0b0c;
+
+    --fill-1: rgba(255, 255, 255, 0.055);
+    --fill-2: rgba(255, 255, 255, 0.09);
+    --fill-3: rgba(255, 255, 255, 0.15);
+
+    --hairline: rgba(255, 255, 255, 0.08);
+
+    --text-1: #ffffff;
+    --text-2: rgba(255, 255, 255, 0.6);
+    --text-3: rgba(255, 255, 255, 0.4);
+
+    --invert: #000000;
+    --scrim: rgba(0, 0, 0, 0.6);
+
+    --accent: hsl(222 10% 72%);
+    --accent-ink: #000000;
+    --accent-soft: hsl(222 10% 72% / 0.16);
+    --accent-tint: hsl(222 10% 72% / 0.08);
+
+    --danger: hsl(4 80% 68%);
+  }
+}
+
+:root[data-theme="dark"] {
   color-scheme: dark;
 
-  /* Surfaces, darkest to lightest. */
-  --ground: oklch(0.145 0.006 265);
-  --surface: oklch(0.188 0.007 265);
-  --surface-2: oklch(0.222 0.008 265);
-  --raised: oklch(0.262 0.009 265);
+  --bg: #000000;
+  --bg-sunken: #0b0b0c;
 
-  /* Hairlines. */
-  --line: oklch(1 0 0 / 0.07);
-  --line-strong: oklch(1 0 0 / 0.13);
+  --fill-1: rgba(255, 255, 255, 0.055);
+  --fill-2: rgba(255, 255, 255, 0.09);
+  --fill-3: rgba(255, 255, 255, 0.15);
 
-  /* Type. Low contrast, but every step is still legible on --ground. */
-  --ink: oklch(0.93 0.004 265);
-  --ink-2: oklch(0.72 0.006 265);
-  --ink-3: oklch(0.56 0.007 265);
-  --ink-4: oklch(0.44 0.008 265);
+  --hairline: rgba(255, 255, 255, 0.08);
 
-  /* Set at runtime by AccentDriver from components/ui/accent.ts.
-     These defaults are the amount=0 end of the ramp, so the first paint
-     before hydration is already correct. */
-  --accent: oklch(0.845 0.12 196);
-  --accent-hot: oklch(0.735 0.14 180);
-  --accent-dim: oklch(0.645 0.066 196);
-  --accent-glow: oklch(0.795 0.12 196 / 0.3);
-  --accent-wash: oklch(0.845 0.12 196 / 0.07);
+  --text-1: #ffffff;
+  --text-2: rgba(255, 255, 255, 0.6);
+  --text-3: rgba(255, 255, 255, 0.4);
 
-  /* Artwork backdrop, also driven at runtime. */
-  --art-blur: 14px;
-  --art-opacity: 0.4;
-  --art-scale: 1.06;
+  --invert: #000000;
+  --scrim: rgba(0, 0, 0, 0.6);
 
-  --danger: oklch(0.65 0.18 23);
+  --accent: hsl(222 10% 72%);
+  --accent-ink: #000000;
+  --accent-soft: hsl(222 10% 72% / 0.16);
+  --accent-tint: hsl(222 10% 72% / 0.08);
+
+  --danger: hsl(4 80% 68%);
 }
 
 @theme inline {
-  --color-ground: var(--ground);
-  --color-surface: var(--surface);
-  --color-surface-2: var(--surface-2);
-  --color-raised: var(--raised);
+  --color-bg: var(--bg);
+  --color-sunken: var(--bg-sunken);
 
-  --color-line: var(--line);
-  --color-line-strong: var(--line-strong);
+  --color-fill-1: var(--fill-1);
+  --color-fill-2: var(--fill-2);
+  --color-fill-3: var(--fill-3);
 
-  --color-ink: var(--ink);
-  --color-ink-2: var(--ink-2);
-  --color-ink-3: var(--ink-3);
-  --color-ink-4: var(--ink-4);
+  --color-hairline: var(--hairline);
 
+  --color-t1: var(--text-1);
+  --color-t2: var(--text-2);
+  --color-t3: var(--text-3);
+
+  --color-invert: var(--invert);
   --color-accent: var(--accent);
-  --color-accent-hot: var(--accent-hot);
-  --color-accent-dim: var(--accent-dim);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-soft: var(--accent-soft);
   --color-danger: var(--danger);
 
-  --font-sans: var(--font-ui), ui-sans-serif, system-ui, sans-serif;
+  /* The system stack. On macOS this resolves to SF Pro and reads native;
+     no webfont is loaded, by design. */
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui,
+    "Helvetica Neue", Arial, sans-serif;
 
-  --radius-panel: 1.25rem;
-
-  --animate-shimmer: shimmer 1.6s ease-in-out infinite;
-  --animate-rise: rise 0.3s cubic-bezier(0.22, 1, 0.36, 1) both;
+  --animate-fade-in: fade-in 0.2s ease both;
 }
 
-@keyframes shimmer {
-  0% {
-    opacity: 0.45;
-  }
-  50% {
-    opacity: 0.85;
-  }
-  100% {
-    opacity: 0.45;
-  }
-}
-
-@keyframes rise {
+@keyframes fade-in {
   from {
     opacity: 0;
-    transform: translateY(6px);
   }
   to {
     opacity: 1;
-    transform: none;
   }
 }
 
 html {
-  background: var(--ground);
+  background: var(--bg);
 }
 
 body {
-  background: var(--ground);
-  color: var(--ink);
-  font-family: var(--font-ui), ui-sans-serif, system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text-1);
+  font-family: var(--font-sans);
+  font-size: 14px;
   -webkit-font-smoothing: antialiased;
-  text-rendering: optimizeLegibility;
-  /* Dragging a dial should never select text or kick off a page scroll. */
+  -moz-osx-font-smoothing: grayscale;
+  /* Dragging the Dampen control must never select text or bounce the page. */
   overscroll-behavior: none;
 }
 
 ::selection {
-  background: var(--accent-wash);
-  color: var(--ink);
+  background: var(--accent-soft);
 }
 
-/* Focus rings: always visible, always on the accent, never on mouse clicks. */
 @layer base {
   :focus-visible {
     outline: 2px solid var(--accent);
-    outline-offset: 2px;
+    outline-offset: 3px;
+    border-radius: 4px;
   }
   button,
   [role="button"],
   [role="slider"],
-  [role="tab"],
+  [role="switch"],
   [role="option"] {
     -webkit-tap-highlight-color: transparent;
   }
 }
 
+/** Times, percentages, dB — anything that must not jitter as it changes. */
 @utility num {
   font-variant-numeric: tabular-nums;
-  font-feature-settings: "tnum" 1, "cv05" 1;
-  letter-spacing: -0.01em;
+  font-feature-settings: "tnum" 1;
 }
 
-/** Wide-tracked uppercase micro-label — the audio-hardware legend voice. */
-@utility legend {
-  font-size: 0.625rem;
-  line-height: 1;
-  font-weight: 600;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--ink-3);
+/**
+ * The product metaphor, as one declaration.
+ *
+ * As `--dampen` rises the artwork blurs, desaturates and dims — the music
+ * visibly recedes. The scale term grows just fast enough to keep the blur's
+ * soft edge outside the frame, so the art never shows a translucent rim.
+ */
+@utility art-recede {
+  filter: blur(calc(var(--dampen) * 18px))
+    saturate(calc(1 - var(--dampen) * 0.8))
+    brightness(calc(1 - var(--dampen) * 0.18));
+  transform: scale(calc(1 + var(--dampen) * 0.1));
+  transition:
+    filter 140ms linear,
+    transform 140ms linear;
+  will-change: filter, transform;
 }
 
-/** A panel: faint gradient so it catches light from the top edge. */
-@utility panel {
-  background:
-    linear-gradient(to bottom, oklch(1 0 0 / 0.035), oklch(1 0 0 / 0.008) 40%),
-    var(--surface);
-  border: 1px solid var(--line);
-  box-shadow:
-    inset 0 1px 0 0 oklch(1 0 0 / 0.045),
-    0 1px 2px 0 oklch(0 0 0 / 0.5),
-    0 12px 32px -16px oklch(0 0 0 / 0.7);
+@utility no-scrollbar {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
 }
 
-@utility glow-accent {
-  box-shadow:
-    0 0 0 1px var(--accent-dim),
-    0 0 24px -4px var(--accent-glow);
-}
-
-/* Thin, self-effacing scrollbars. */
-@utility scroll-slim {
+/** Visible only when the region is hovered or focused within. */
+@utility scroll-quiet {
   scrollbar-width: thin;
-  scrollbar-color: var(--line-strong) transparent;
+  scrollbar-color: transparent transparent;
+
+  &:hover,
+  &:focus-within {
+    scrollbar-color: var(--fill-3) transparent;
+  }
 
   &::-webkit-scrollbar {
-    width: 10px;
-    height: 10px;
+    width: 9px;
+    height: 9px;
   }
   &::-webkit-scrollbar-track {
     background: transparent;
   }
   &::-webkit-scrollbar-thumb {
+    background-color: transparent;
     background-clip: content-box;
     border: 3px solid transparent;
     border-radius: 9999px;
-    background-color: oklch(1 0 0 / 0.12);
   }
-  &::-webkit-scrollbar-thumb:hover {
-    background-color: oklch(1 0 0 / 0.22);
+  &:hover::-webkit-scrollbar-thumb {
+    background-color: var(--fill-3);
   }
 }
 
-/* Honour the OS setting globally as a backstop. Components additionally gate
-   their own animations on `useReducedMotion()` so springs never even start. */
+/* Every component also gates its own motion on `useReducedMotion()`; this is
+   the backstop for CSS transitions they do not own. */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

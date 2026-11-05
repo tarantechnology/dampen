@@ -19,12 +19,14 @@
 import { PURE_TESTS } from './__tests__/dsp.test';
 import { CAPTURE_TESTS } from './__tests__/capture.test';
 import { OFFLINE_TESTS } from './__tests__/offline.test';
+import { BROWSER_TESTS } from './__tests__/browser.test';
 import { formatReport, runCases, type TestReport } from './__tests__/harness';
 
 export interface SelfTestReport {
   readonly pure: TestReport;
   readonly capture: TestReport;
   readonly offline: TestReport;
+  readonly browser: TestReport;
   readonly ok: boolean;
   /** Plain-text summary, ready to drop into a `<pre>`. */
   readonly text: string;
@@ -35,6 +37,7 @@ export async function runSelfTest(): Promise<SelfTestReport> {
   const pure = await runCases(PURE_TESTS);
   const capture = await runCases(CAPTURE_TESTS);
   const offline = await runCases(OFFLINE_TESTS);
+  const browser = await runCases(BROWSER_TESTS);
   const text = [
     'pure DSP (no AudioContext)',
     formatReport(pure),
@@ -44,8 +47,18 @@ export async function runSelfTest(): Promise<SelfTestReport> {
     '',
     'Web Audio (OfflineAudioContext)',
     formatReport(offline),
+    '',
+    'engine integration (live AudioContext + worklets)',
+    formatReport(browser),
   ].join('\n');
-  return { pure, capture, offline, ok: pure.ok && capture.ok && offline.ok, text };
+  return {
+    pure,
+    capture,
+    offline,
+    browser,
+    ok: pure.ok && capture.ok && offline.ok && browser.ok,
+    text,
+  };
 }
 
 /** Run every suite and print it. Returns the report for further inspection. */

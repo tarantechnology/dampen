@@ -32,18 +32,43 @@ things at once, and Dampen models all five:
 
 | | What it does | Why it matters |
 |---|---|---|
-| **Low-pass cascade** | up to 48 dB/oct, down to ~300 Hz | Removes the sibilance and transient detail that trigger orienting responses |
-| **Presence dip** | −6 dB around 2.5 kHz | The 1–5 kHz band carries speech intelligibility and attention. Dip it and lyrics stop demanding to be parsed |
+| **Low-pass cascade** | staggered-Q Butterworth, down to ~300 Hz | A 1 kHz low-pass drops syllable articulation from ~98% to **27%** (French & Steinberg 1947). Removing spectral detail is the mechanism |
+| **Presence shaping** | around 1.6–4 kHz | That band carries 34.9% of intelligibility, and the ear adds **+15 to +20 dB** of its own gain there. Miss it and you are fighting your own cochlea |
 | **Width collapse** | M/S matrix toward mono | A wide stereo image reads as *present in the room*; mono reads as *elsewhere* |
-| **Short dark reverb** | RT60 ~0.6 s, 18 ms pre-delay | Distance cue. Procedurally synthesised, no IR files shipped |
-| **Compression** | 3:1, slow release | Flattens the dynamic jumps that pull focus back |
+| **Short dark reverb** | RT60 ~0.5 s, 8 ms pre-delay | Distance cue. Procedurally synthesised, no IR files shipped |
+| **Compression** | 8:1, fast attack | Flattens the dynamic jumps that pull focus back |
 
-Plus a **masking bed** — brown noise at around −32 dBFS — which covers what is left
-of the presence band. Spectral masking is doing real perceptual work here, not
-decoration.
+### Why "just turn it down" does not work
 
-Eight presets ship (local-file paths get the full set): `Next Room`, `Underwater`, `Rainy Window`, `Tape Memory`,
-`Library`, `Deep Focus`, `Distant Radio`, `Dream`.
+The irrelevant-sound effect is **level-independent above threshold** (Ellermeier & Hellbrück 1998).
+Volume reduction buys you lower annoyance and nothing else. What actually predicts distraction is
+**spectral channel count**: noise-vocoded speech at 1–2 bands produces *no* measurable interference
+versus silence, while 4 or 20 bands roughly doubles error rate. Volume cannot touch that. A filter
+can.
+
+So Spotify-plus-volume-ducking is not a degraded Dampen. It is a different thing that does not work.
+
+### One detail worth the trouble
+
+Walls are low-pass, never high-pass — about 10.5 dB/oct measured (ASTM E90) — but they **leak at
+1.6–2.5 kHz** through coincidence, which no mixing tutorial models. So `next-room` carries a
+deliberate **+3 dB** peak at 2.2 kHz. The 800 Hz cascade has already pulled that region down ~17 dB;
+the bump restores its *character*, not its level. `deep-focus` makes the opposite choice at almost
+the same frequency, because realism and focus genuinely disagree there.
+
+### About the noise bed
+
+There is an ambience generator (brown, pink, rain, vinyl, tape, cafe, river, fan), and it **defaults
+to off**. Being honest about why: brown noise has *zero* studies behind it, and the actual finding on
+noise-for-focus is an interaction, not a benefit — it helps attention-impaired listeners (g = 0.249)
+and **harms** controls (g = −0.212). It is also gated off entirely for Spotify sources, per Developer
+Policy §III. It is there for local files, if it works for you.
+
+Eight presets ship: `Next Room`, `Underwater`, `Rainy Window`, `Tape Memory`, `Library`,
+`Deep Focus`, `Distant Radio`, `Dream`.
+
+Everything above is sourced and argued in [docs/EFFECTS_RESEARCH.md](docs/EFFECTS_RESEARCH.md)
+(3,500 lines, cited), including a section on where the evidence is thin.
 
 ## The interesting constraint
 
@@ -173,9 +198,27 @@ is audible as zipper noise, and the dial is the whole product.
 ```bash
 npm run dev         # 127.0.0.1:3000
 npm run typecheck   # tsc --noEmit, strict
-npm test            # unit tests for the DSP maths
+npm test            # 72 DSP + 142 Spotify tests
 npm run build
+
+# The Web Audio half of the suite needs a real OfflineAudioContext, which Node
+# does not have. This drives a headless Chrome to run all 97 DSP cases for
+# real, screenshot the UI at desktop and phone widths, and report console
+# errors. No Playwright, no Puppeteer — just CDP over a WebSocket.
+node scripts/cdp-verify.mjs
+
+# Probes actual capture devices and flags which ones pass audio through
+# (those comb against Dampen's output). Runs Chrome non-headless on purpose:
+# headless exposes no audio hardware.
+node scripts/cdp-audio-devices.mjs
 ```
+
+**97 DSP assertions verified by measurement, in a browser, not by assertion alone**: `DEFAULT_PARAMS`
+flat to <0.05 dB from 20 Hz–20 kHz; −3.01 dB at the stated cutoff for orders 2/4/6/8; M/S
+bit-transparent at width 1 and exact mono at 0; the waveshaper transparent at drive 0; unity-gain
+impulse responses across every decay; a NaN storm leaving the graph alive. Running them in a real
+browser caught five bugs that would otherwise have shipped, including `ctx.resume()` hanging forever
+under the autoplay policy and a path that would have emitted NaN into the graph permanently.
 
 `/design` renders every UI component against fixtures with no Spotify account needed.
 

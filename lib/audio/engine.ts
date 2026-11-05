@@ -114,6 +114,20 @@ const SATURATION_CURVE_STEP = 0.002;
 /** Below this drive the waveshaper is the identity and oversampling is pointless. */
 const SATURATION_ENGAGE = 0.0005;
 
+/**
+ * Cutoff the highpass is parked at when `highpass.freq` is at the open
+ * sentinel.
+ *
+ * Unlike the lowpass cascade this needs no allpass trick — one second-order
+ * Butterworth section parked far below the audible band is transparent enough
+ * to measure as flat. But "far below" has to be *far*: at 10 Hz the section
+ * still costs 0.27 dB at 20 Hz, which a response plot shows and which breaks
+ * the "DEFAULT_PARAMS is flat" contract. At 5 Hz it is 0.07 dB at 20 Hz and
+ * 0.004 dB at 40 Hz, i.e. flat to the resolution of any measurement that
+ * matters. (Measured in Chrome via `getFrequencyResponse`, not estimated.)
+ */
+const HIGHPASS_NEUTRAL_HZ = 5;
+
 const FFT_SIZE = 2048;
 const SMOOTHING = 0.8;
 
@@ -129,6 +143,19 @@ const RUNAWAY_POLLS = 30;
 
 /** How fast the runaway guard pulls the output down once it decides. */
 const RUNAWAY_DUCK_MS = 120;
+
+/**
+ * How long to wait for `AudioContext.resume()` before giving up on it.
+ *
+ * `resume()` does not reject when the autoplay policy blocks it — it returns a
+ * promise that stays **pending indefinitely** until the page gets user
+ * activation. An `await` on it therefore never returns, so a `start()` called
+ * outside a gesture would hang its caller forever and the UI would simply look
+ * dead with no error. Observed directly in headless Chrome, which never grants
+ * activation. So the wait is bounded and the real state is read from
+ * `ctx.state` afterwards.
+ */
+const RESUME_TIMEOUT_MS = 3000;
 
 /** No risk, as a frozen value, so identity comparisons are cheap. */
 const NO_FEEDBACK_RISK: FeedbackAssessment = Object.freeze({
@@ -549,9 +576,23 @@ export class DampenEngine {
     if (!ctx) return;
     if (ctx.state !== 'running') {
       try {
-        await ctx.resume();
+        /*
+         * Bounded wait — see RESUME_TIMEOUT_MS. The timeout is not an error
+         * path: it simply means the context is still suspended, which
+         * `syncStatusFromContext` below will report honestly so the UI can
+         * prompt for another click.
+         */
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        await Promise.race([
+          ctx.resume(),
+          new Promise<void>((resolve) => {
+            timer = setTimeout(resolve, RESUME_TIMEOUT_MS);
+          }),
+        ]);
+        if (timer !== undefined) clearTimeout(timer);
       } catch (err) {
-        // Autoplay policy refusal. Not fatal: the user can click again.
+        // An outright rejection (a closed context, a policy refusal that does
+        // reject). Not fatal: the user can click again.
         this.lastError = err instanceof Error ? err : new Error(String(err));
       }
     }
@@ -1066,10 +1107,22 @@ export class DampenEngine {
     analyserIn.fftSize = FFT_SIZE;
     analyserIn.smoothingTimeConstant = SMOOTHING;
 
+    /*
+     * Every node below is constructed in its *neutral* state, not merely in a
+     * plausible one.
+     *
+     * `applyParams(0)` runs immediately after this and writes the real values,
+     * but `getFrequencyResponse` (and the first render block) read the params
+     * the rendering thread has already sampled — so for one quantum the
+     * constructor defaults are what is live. Measured in Chrome: leaving the
+     * Web Audio defaults in place made the first response plot read +1.25 dB
+     * at 28 Hz (a 20 Hz highpass at the node's default Q of 0 dB, which is
+     * Q_linear = 1 and therefore resonant) rather than flat.
+     */
     const highpass = ctx.createBiquadFilter();
     highpass.type = 'highpass';
-    highpass.frequency.value = HIGHPASS_OPEN_HZ;
-    highpass.Q.value = 0;
+    highpass.frequency.value = HIGHPASS_NEUTRAL_HZ;
+    highpass.Q.value = BUTTERWORTH_Q_DB;
 
     const lowShelf = ctx.createBiquadFilter();
     lowShelf.type = 'lowshelf';
@@ -1119,6 +1172,15 @@ export class DampenEngine {
     const width = createWidthBlock(ctx);
 
     const compressor = ctx.createDynamicsCompressor();
+    /*
+     * The node's own defaults are threshold -24 dB, knee 30 dB, ratio 12:1 —
+     * i.e. heavy compression, not a bypass. Left alone, the very first render
+     * block would be squashed before `applyParams` landed. Ratio 1 with a
+     * 0 dB threshold and no knee is the real identity.
+     */
+    compressor.threshold.value = 0;
+    compressor.ratio.value = 1;
+    compressor.knee.value = 0;
     const makeup = ctx.createGain();
 
     const driftGain = ctx.createGain();
@@ -1315,7 +1377,12 @@ export class DampenEngine {
      * Butterworth highpass parked at 10 Hz is already −0.27 dB at 20 Hz and
      * −0.01 dB at 40 Hz, i.e. transparent in the audible band. */
     const hpOpen = p.highpass.freq <= HIGHPASS_OPEN_HZ;
-    rampSmooth(ctx, g.highpass.frequency, hpOpen ? 10 : Math.min(p.highpass.freq, fMax), rampMs);
+    rampSmooth(
+      ctx,
+      g.highpass.frequency,
+      hpOpen ? HIGHPASS_NEUTRAL_HZ : Math.min(p.highpass.freq, fMax),
+      rampMs,
+    );
     // `highpass.q` is LINEAR in DampenParams (per lib/types.ts) but the node
     // wants decibels. See BUTTERWORTH_Q_DB for why this conversion exists.
     rampSmooth(

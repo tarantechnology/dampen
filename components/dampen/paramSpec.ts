@@ -5,9 +5,9 @@
  * sanitises everything anyway, but a slider that can reach a value the engine
  * will clamp is a lying slider.
  *
- * Note `highpass.q` / `lowpass.q`: in the Web Audio spec these are a
- * *resonance in decibels* for lowpass and highpass, not a classic Q factor.
- * 0 dB is Butterworth. They are labelled accordingly so nobody hunts for 0.707.
+ * Note `highpass.q` / `lowpass.q`: `DampenParams` carries these as *linear*
+ * Q, where 0.707 is Butterworth. The engine converts to the decibel figure
+ * `BiquadFilterNode` wants; nothing in the UI ever sees that conversion.
  */
 
 import type { AmbienceKind, DampenParams } from '@/lib/types';
@@ -113,11 +113,11 @@ export const PARAM_GROUPS: ParamGroup[] = [
       {
         path: 'lowpass.q',
         label: 'Lowpass resonance',
-        min: 0,
-        max: 12,
-        step: 0.1,
-        unit: 'db',
-        hint: 'Peak at the corner, in dB. Above about 6 dB the cutoff whistles.',
+        min: 0.1,
+        max: 8,
+        step: 0.05,
+        unit: 'x',
+        hint: 'Linear Q. 0.71 is maximally flat; past about 2 the cutoff whistles.',
       },
       {
         path: 'highpass.freq',
@@ -131,10 +131,10 @@ export const PARAM_GROUPS: ParamGroup[] = [
       {
         path: 'highpass.q',
         label: 'Highpass resonance',
-        min: 0,
-        max: 12,
-        step: 0.1,
-        unit: 'db',
+        min: 0.1,
+        max: 8,
+        step: 0.05,
+        unit: 'x',
       },
       {
         path: 'lowShelf.freq',
@@ -295,14 +295,14 @@ export const PARAM_GROUPS: ParamGroup[] = [
         unit: 'pct',
         hint: 'Soft clipping. Rounds transients off before they can startle you.',
       },
-      { path: 'wowFlutter.wowRate', label: 'Wow rate', min: 0.05, max: 4, scale: 'log', unit: 'lfo' },
+      { path: 'wowFlutter.wowRate', label: 'Wow rate', min: 0, max: 8, step: 0.05, unit: 'lfo' },
       { path: 'wowFlutter.wowDepth', label: 'Wow depth', min: 0, max: 1, step: 0.01, unit: 'pct' },
       {
         path: 'wowFlutter.flutterRate',
         label: 'Flutter rate',
-        min: 2,
-        max: 20,
-        scale: 'log',
+        min: 0,
+        max: 24,
+        step: 0.1,
         unit: 'lfo',
       },
       {
@@ -356,7 +356,7 @@ export const PARAM_GROUPS: ParamGroup[] = [
     name: 'Drift',
     blurb: 'A very slow breathe, so the music never sits still enough to grab you.',
     params: [
-      { path: 'drift.rate', label: 'Rate', min: 0, max: 2, scale: 'log', unit: 'lfo' },
+      { path: 'drift.rate', label: 'Rate', min: 0, max: 2, step: 0.01, unit: 'lfo' },
       {
         path: 'drift.depth',
         label: 'Depth',

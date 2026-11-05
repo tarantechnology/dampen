@@ -1,33 +1,37 @@
 /**
- * The accent ramp — Dampen's single most important piece of visual feedback.
+ * The accent, derived from the album artwork.
  *
- * As the macro dial travels 0 -> 1 the whole interface cools down and sinks:
- * a bright cyan "open window" becomes a deep ember glow behind a wall. The
- * ramp is authored in OKLCH so the interpolation is perceptually even and
- * never passes through a muddy or over-saturated hue.
+ * Apple Music tints its Now Playing screen with a colour pulled out of the
+ * cover, which is why every screen looks designed for that one song. This
+ * module does the same thing, in three steps:
  *
- * These values are written to CSS custom properties on <html> by
- * `AccentDriver` (components/player/AmbientBackdrop.tsx), so changing the dial
- * restyles the entire app without re-rendering a single React component.
+ *   1. Draw the cover into a 16x16 canvas — 256 pixels is plenty, and the
+ *      browser's own downscale is a free box blur.
+ *   2. Bin those pixels by hue, weighted by saturation, and take the heaviest
+ *      bin's circular mean. Near-greys, near-blacks and near-whites are
+ *      excluded, so a photo of a dark room does not yield "dark grey".
+ *   3. Clamp saturation and lightness into a band that is guaranteed to read
+ *      on the current ground, and pick black or white for text sitting on
+ *      top of it by actual relative luminance.
+ *
+ * With no artwork (a local file, a procedural cover, the /design route) the
+ * hue comes from a hash of the title instead, so the result is still stable
+ * and still specific to the thing playing.
  */
 
-export interface Oklch {
-  /** Lightness, 0..1 */
-  l: number;
-  /** Chroma, ~0..0.37 */
-  c: number;
-  /** Hue, degrees */
+export interface Accent {
+  /** `hsl(...)`, ready for a CSS value. */
+  css: string;
+  /** Black or white — whichever actually reads on `css`. */
+  ink: string;
+  /** The accent at low alpha, for selected-chip and hover fills. */
+  soft: string;
+  /** Fainter still, for the halo behind the artwork. */
+  tint: string;
   h: number;
+  s: number;
+  l: number;
 }
-
-/** cyan -> seafoam -> gold -> amber -> ember */
-const RAMP: Array<{ at: number; color: Oklch }> = [
-  { at: 0.0, color: { l: 0.845, c: 0.12, h: 196 } },
-  { at: 0.3, color: { l: 0.83, c: 0.095, h: 168 } },
-  { at: 0.6, color: { l: 0.79, c: 0.11, h: 92 } },
-  { at: 0.85, color: { l: 0.7, c: 0.145, h: 62 } },
-  { at: 1.0, color: { l: 0.6, c: 0.15, h: 44 } },
-];
 
 export function clamp(v: number, min: number, max: number): number {
   return v < min ? min : v > max ? max : v;
@@ -37,78 +41,226 @@ export function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
 }
 
-/** Sample the ramp. `amount` is the macro dial, 0..1. */
-export function accentAt(amount: number): Oklch {
-  const a = clamp(amount, 0, 1);
-  for (let i = 1; i < RAMP.length; i += 1) {
-    const prev = RAMP[i - 1];
-    const next = RAMP[i];
-    if (a <= next.at) {
-      const span = next.at - prev.at;
-      const t = span === 0 ? 0 : (a - prev.at) / span;
-      return {
-        l: lerp(prev.color.l, next.color.l, t),
-        c: lerp(prev.color.c, next.color.c, t),
-        h: lerp(prev.color.h, next.color.h, t),
-      };
-    }
-  }
-  return RAMP[RAMP.length - 1].color;
+/* ------------------------------------------------------------------ *
+ * Colour conversion
+ * ------------------------------------------------------------------ */
+
+interface Hsl {
+  h: number;
+  s: number;
+  l: number;
 }
 
-export function oklch({ l, c, h }: Oklch, alpha = 1): string {
-  const base = `${l.toFixed(4)} ${c.toFixed(4)} ${h.toFixed(2)}`;
-  return alpha >= 1 ? `oklch(${base})` : `oklch(${base} / ${alpha})`;
+/** sRGB bytes -> HSL with s,l in 0..1 and h in degrees. */
+export function rgbToHsl(r8: number, g8: number, b8: number): Hsl {
+  const r = r8 / 255;
+  const g = g8 / 255;
+  const b = b8 / 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  const d = max - min;
+  if (d === 0) return { h: 0, s: 0, l };
+
+  const s = d / (1 - Math.abs(2 * l - 1));
+  let h: number;
+  if (max === r) h = ((g - b) / d) % 6;
+  else if (max === g) h = (b - r) / d + 2;
+  else h = (r - g) / d + 4;
+  h *= 60;
+  if (h < 0) h += 360;
+  return { h, s, l };
 }
 
-export interface AccentVars {
-  /** The accent itself. */
-  '--accent': string;
-  /** Hotter, darker end — the far stop of the dial's arc gradient. */
-  '--accent-hot': string;
-  /** Muted, for hairlines and inactive marks. */
-  '--accent-dim': string;
-  /** Wide, soft glow for shadows and bloom. */
-  '--accent-glow': string;
-  /** Faint wash for selected surfaces. */
-  '--accent-wash': string;
-  /** Backdrop blur radius, in px, as a bare number string with unit. */
-  '--art-blur': string;
-  /** Backdrop opacity. */
-  '--art-opacity': string;
-  /** Backdrop scale. */
-  '--art-scale': string;
+function srgbChannel(c: number): number {
+  const v = c / 255;
+  return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
 }
+
+function hslToRgb({ h, s, l }: Hsl): [number, number, number] {
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const hp = (((h % 360) + 360) % 360) / 60;
+  const x = c * (1 - Math.abs((hp % 2) - 1));
+  const m = l - c / 2;
+  let rgb: [number, number, number];
+  if (hp < 1) rgb = [c, x, 0];
+  else if (hp < 2) rgb = [x, c, 0];
+  else if (hp < 3) rgb = [0, c, x];
+  else if (hp < 4) rgb = [0, x, c];
+  else if (hp < 5) rgb = [x, 0, c];
+  else rgb = [c, 0, x];
+  return [
+    Math.round((rgb[0] + m) * 255),
+    Math.round((rgb[1] + m) * 255),
+    Math.round((rgb[2] + m) * 255),
+  ];
+}
+
+/** WCAG relative luminance, 0..1. */
+function luminance(r: number, g: number, b: number): number {
+  return (
+    0.2126 * srgbChannel(r) + 0.7152 * srgbChannel(g) + 0.0722 * srgbChannel(b)
+  );
+}
+
+function contrastWith(lum: number, otherLum: number): number {
+  const hi = Math.max(lum, otherLum);
+  const lo = Math.min(lum, otherLum);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+/* ------------------------------------------------------------------ *
+ * The safe band
+ * ------------------------------------------------------------------ */
 
 /**
- * Every derived value the UI needs for a given dial position.
- * Pure: safe to call in render, in a rAF loop, or on the server.
+ * Artwork colours cannot be trusted: a cover is routinely near-black,
+ * fluorescent, or a single flat pastel. Clamping into these bands is what
+ * keeps the slider fill legible against #000 and against #fff alike.
  */
-export function accentVars(amount: number): AccentVars {
-  const a = clamp(amount, 0, 1);
-  const base = accentAt(a);
-  const hot: Oklch = { l: base.l - 0.11, c: base.c + 0.02, h: base.h - 16 };
-  const dim: Oklch = { l: base.l - 0.2, c: base.c * 0.55, h: base.h };
+const BAND = {
+  dark: { sMin: 0.4, sMax: 0.86, lMin: 0.56, lMax: 0.72 },
+  light: { sMin: 0.42, sMax: 0.9, lMin: 0.34, lMax: 0.47 },
+} as const;
 
+export function makeAccent(h: number, s: number, l: number, dark: boolean): Accent {
+  const band = dark ? BAND.dark : BAND.light;
+  const hue = ((h % 360) + 360) % 360;
+  const sat = clamp(s, band.sMin, band.sMax);
+  const light = clamp(l, band.lMin, band.lMax);
+
+  const [r, g, b] = hslToRgb({ h: hue, s: sat, l: light });
+  const lum = luminance(r, g, b);
+  const onWhite = contrastWith(lum, 1);
+  const onBlack = contrastWith(lum, 0);
+  const ink = onBlack >= onWhite ? '#000000' : '#ffffff';
+
+  const base = `${hue.toFixed(1)} ${(sat * 100).toFixed(1)}% ${(light * 100).toFixed(1)}%`;
   return {
-    '--accent': oklch(base),
-    '--accent-hot': oklch(hot),
-    '--accent-dim': oklch(dim),
-    '--accent-glow': oklch({ ...base, l: base.l - 0.05 }, 0.3 + a * 0.22),
-    '--accent-wash': oklch(base, 0.07 + a * 0.07),
-    // The artwork behind the player blurs as the audio muffles. Same metaphor,
-    // two senses. 14px open -> 110px walled-off.
-    '--art-blur': `${(14 + a * 96).toFixed(1)}px`,
-    '--art-opacity': (0.4 - a * 0.19).toFixed(3),
-    '--art-scale': (1.06 + a * 0.16).toFixed(3),
+    css: `hsl(${base})`,
+    ink,
+    soft: `hsl(${base} / ${dark ? 0.18 : 0.15})`,
+    tint: `hsl(${base} / ${dark ? 0.1 : 0.08})`,
+    h: hue,
+    s: sat,
+    l: light,
   };
 }
 
-/** Apply the ramp to an element's inline style. One write, no re-render. */
-export function writeAccentVars(el: HTMLElement | null, amount: number): void {
-  if (!el) return;
-  const vars = accentVars(amount);
-  for (const [key, value] of Object.entries(vars)) {
-    el.style.setProperty(key, value);
+/** The "no artwork, no title" accent: a desaturated neutral that never clashes. */
+export function neutralAccent(dark: boolean): Accent {
+  return dark
+    ? {
+        css: 'hsl(222 10% 72%)',
+        ink: '#000000',
+        soft: 'hsl(222 10% 72% / 0.16)',
+        tint: 'hsl(222 10% 72% / 0.08)',
+        h: 222,
+        s: 0.1,
+        l: 0.72,
+      }
+    : {
+        css: 'hsl(222 14% 42%)',
+        ink: '#ffffff',
+        soft: 'hsl(222 14% 42% / 0.14)',
+        tint: 'hsl(222 14% 42% / 0.07)',
+        h: 222,
+        s: 0.14,
+        l: 0.42,
+      };
+}
+
+/* ------------------------------------------------------------------ *
+ * Sources
+ * ------------------------------------------------------------------ */
+
+export function hashString(input: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < input.length; i += 1) {
+    h ^= input.charCodeAt(i);
+    h = Math.imul(h, 16777619);
   }
+  return Math.abs(h);
+}
+
+/** A stable accent for anything without a cover image. */
+export function accentFromSeed(seed: string, dark: boolean): Accent {
+  if (!seed) return neutralAccent(dark);
+  const h = hashString(seed);
+  return makeAccent(h % 360, 0.5 + ((h >> 9) % 30) / 100, dark ? 0.64 : 0.42, dark);
+}
+
+const HUE_BINS = 24;
+
+/**
+ * The dominant colour of an image, from raw RGBA bytes.
+ *
+ * Returns `null` when the image carries no usable colour at all — an
+ * all-grey cover — so the caller can fall back to the title hash rather than
+ * tint the whole screen battleship grey.
+ */
+export function accentFromPixels(
+  data: Uint8ClampedArray | Uint8Array,
+  dark: boolean,
+): Accent | null {
+  const weight = new Float64Array(HUE_BINS);
+  const sumSin = new Float64Array(HUE_BINS);
+  const sumCos = new Float64Array(HUE_BINS);
+  const sumS = new Float64Array(HUE_BINS);
+  const sumL = new Float64Array(HUE_BINS);
+
+  for (let i = 0; i < data.length; i += 4) {
+    const alpha = data[i + 3];
+    if (alpha < 128) continue;
+    const { h, s, l } = rgbToHsl(data[i], data[i + 1], data[i + 2]);
+    // Greys carry no hue; the extremes are blown out and unreliable.
+    if (s < 0.14 || l < 0.1 || l > 0.93) continue;
+
+    // Favour colour that is both saturated and mid-toned.
+    const w = s * s * (1 - Math.abs(l - 0.5) * 1.1);
+    if (w <= 0) continue;
+
+    const bin = Math.min(HUE_BINS - 1, Math.floor((h / 360) * HUE_BINS));
+    const rad = (h * Math.PI) / 180;
+    weight[bin] += w;
+    sumSin[bin] += Math.sin(rad) * w;
+    sumCos[bin] += Math.cos(rad) * w;
+    sumS[bin] += s * w;
+    sumL[bin] += l * w;
+  }
+
+  let best = -1;
+  let bestWeight = 0;
+  for (let i = 0; i < HUE_BINS; i += 1) {
+    if (weight[i] > bestWeight) {
+      bestWeight = weight[i];
+      best = i;
+    }
+  }
+  if (best < 0 || bestWeight <= 0) return null;
+
+  const hue = (Math.atan2(sumSin[best], sumCos[best]) * 180) / Math.PI;
+  return makeAccent(hue, sumS[best] / bestWeight, sumL[best] / bestWeight, dark);
+}
+
+/* ------------------------------------------------------------------ *
+ * Writing it out
+ * ------------------------------------------------------------------ */
+
+/**
+ * One write to <html>, no React render anywhere. Everything that uses the
+ * accent reads these four properties.
+ */
+export function writeAccent(el: HTMLElement | null, accent: Accent): void {
+  if (!el) return;
+  el.style.setProperty('--accent', accent.css);
+  el.style.setProperty('--accent-ink', accent.ink);
+  el.style.setProperty('--accent-soft', accent.soft);
+  el.style.setProperty('--accent-tint', accent.tint);
+}
+
+/** Same deal for the macro. Drives the artwork's blur without a re-render. */
+export function writeDampen(el: HTMLElement | null, amount: number): void {
+  if (!el) return;
+  el.style.setProperty('--dampen', clamp(amount, 0, 1).toFixed(4));
 }

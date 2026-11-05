@@ -12,17 +12,14 @@ import {
   Volume2,
   VolumeX,
 } from 'lucide-react';
-import type { PlaybackState } from '@/lib/spotify/types';
 import { cn } from '@/lib/cn';
-import { RoundButton } from '@/components/ui/Button';
+import { IconButton } from '@/components/ui/Button';
 import { Slider } from '@/components/ui/Slider';
-import { Tooltip } from '@/components/ui/Tooltip';
-import { formatPercent } from '@/components/ui/format';
 
 export interface TransportProps {
   isPlaying: boolean;
   shuffle: boolean;
-  repeat: PlaybackState['repeat'];
+  repeat: 'off' | 'track' | 'context';
   /** 0..1 */
   volume: number;
   muted: boolean;
@@ -31,19 +28,23 @@ export interface TransportProps {
   onPrevious(): void;
   onShuffle(on: boolean): void;
   onCycleRepeat(): void;
-  onVolume(v: number): void;
+  onVolume(value: number): void;
   onToggleMute(): void;
-  /** No active device yet — everything but the volume fader is inert. */
   disabled?: boolean;
   className?: string;
 }
 
-const REPEAT_LABEL: Record<PlaybackState['repeat'], string> = {
+const REPEAT_LABEL: Record<TransportProps['repeat'], string> = {
   off: 'Repeat off',
-  context: 'Repeat playlist',
+  context: 'Repeat all',
   track: 'Repeat this track',
 };
 
+/**
+ * Shuffle, previous, play, next, repeat — then volume, one row below and
+ * half a step quieter. The same arrangement Apple Music uses, for the same
+ * reason: only one of these controls is ever the one you came for.
+ */
 export function Transport({
   isPlaying,
   shuffle,
@@ -63,115 +64,86 @@ export function Transport({
   const VolumeIcon = muted || volume === 0 ? VolumeX : volume < 0.5 ? Volume1 : Volume2;
 
   return (
-    <div
-      className={cn(
-        'flex w-full flex-col items-center gap-5 sm:flex-row sm:justify-between',
-        className,
-      )}
-    >
-      {/* Left: modes. On a phone these sit under the main row. */}
-      <div className="order-2 flex items-center gap-1.5 sm:order-1 sm:w-32">
-        <Tooltip label={shuffle ? 'Shuffle on' : 'Shuffle off'}>
-          <RoundButton
-            diameter={36}
-            active={shuffle}
-            aria-label="Shuffle"
-            aria-pressed={shuffle}
-            disabled={disabled}
-            onClick={() => onShuffle(!shuffle)}
-          >
-            <Shuffle className="size-4" aria-hidden />
-          </RoundButton>
-        </Tooltip>
-        <Tooltip label={REPEAT_LABEL[repeat]}>
-          <RoundButton
-            diameter={36}
-            active={repeat !== 'off'}
-            aria-label={REPEAT_LABEL[repeat]}
-            disabled={disabled}
-            onClick={onCycleRepeat}
-          >
-            {repeat === 'track' ? (
-              <Repeat1 className="size-4" aria-hidden />
-            ) : (
-              <Repeat className="size-4" aria-hidden />
-            )}
-          </RoundButton>
-        </Tooltip>
+    <div className={cn('flex w-full flex-col items-center gap-4', className)}>
+      <div className="flex items-center gap-2 sm:gap-3">
+        <IconButton
+          label="Shuffle"
+          active={shuffle}
+          disabled={disabled}
+          onClick={() => onShuffle(!shuffle)}
+          className={shuffle ? 'text-accent' : undefined}
+        >
+          <Shuffle size={16} strokeWidth={2.1} />
+        </IconButton>
+
+        <IconButton
+          label="Previous track"
+          disabled={disabled}
+          onClick={onPrevious}
+          className="size-11 text-t1"
+        >
+          <SkipBack size={21} strokeWidth={1.9} fill="currentColor" />
+        </IconButton>
+
+        <button
+          type="button"
+          aria-label={isPlaying ? 'Pause' : 'Play'}
+          disabled={disabled}
+          onClick={onToggle}
+          className={cn(
+            'mx-1 flex size-[56px] items-center justify-center rounded-full bg-t1 text-invert',
+            'transition-[transform,opacity] duration-150 active:scale-95',
+            'disabled:pointer-events-none disabled:opacity-30',
+          )}
+        >
+          {isPlaying ? (
+            <Pause size={22} strokeWidth={0} fill="currentColor" />
+          ) : (
+            <Play size={22} strokeWidth={0} fill="currentColor" className="ml-[3px]" />
+          )}
+        </button>
+
+        <IconButton
+          label="Next track"
+          disabled={disabled}
+          onClick={onNext}
+          className="size-11 text-t1"
+        >
+          <SkipForward size={21} strokeWidth={1.9} fill="currentColor" />
+        </IconButton>
+
+        <IconButton
+          label={REPEAT_LABEL[repeat]}
+          active={repeat !== 'off'}
+          disabled={disabled}
+          onClick={onCycleRepeat}
+          className={repeat !== 'off' ? 'text-accent' : undefined}
+        >
+          {repeat === 'track' ? (
+            <Repeat1 size={16} strokeWidth={2.1} />
+          ) : (
+            <Repeat size={16} strokeWidth={2.1} />
+          )}
+        </IconButton>
       </div>
 
-      {/* Centre: the three that matter. */}
-      <div className="order-1 flex items-center gap-3 sm:order-2">
-        <Tooltip label="Previous">
-          <RoundButton
-            diameter={46}
-            aria-label="Previous track"
-            disabled={disabled}
-            onClick={onPrevious}
-          >
-            <SkipBack className="size-5" aria-hidden />
-          </RoundButton>
-        </Tooltip>
-
-        <Tooltip label={isPlaying ? 'Pause' : 'Play'} shortcut="Space">
-          <button
-            type="button"
-            aria-label={isPlaying ? 'Pause' : 'Play'}
-            disabled={disabled}
-            onClick={onToggle}
-            className={cn(
-              'relative flex size-16 shrink-0 items-center justify-center rounded-full',
-              'text-ground transition-transform duration-150 active:scale-[0.95]',
-              'disabled:pointer-events-none disabled:opacity-35',
-            )}
-            style={{
-              background: 'linear-gradient(160deg, var(--accent), var(--accent-hot))',
-              boxShadow: '0 10px 30px -10px var(--accent-glow), inset 0 1px 0 rgba(255,255,255,0.3)',
-            }}
-          >
-            {isPlaying ? (
-              <Pause className="size-7" strokeWidth={2.4} aria-hidden />
-            ) : (
-              <Play className="size-7 translate-x-[2px]" strokeWidth={2.4} aria-hidden />
-            )}
-          </button>
-        </Tooltip>
-
-        <Tooltip label="Next">
-          <RoundButton
-            diameter={46}
-            aria-label="Next track"
-            disabled={disabled}
-            onClick={onNext}
-          >
-            <SkipForward className="size-5" aria-hidden />
-          </RoundButton>
-        </Tooltip>
-      </div>
-
-      {/* Right: volume. */}
-      <div className="order-3 flex w-full items-center gap-2.5 sm:w-32">
-        <Tooltip label={muted ? 'Unmute' : 'Mute'} shortcut="M">
-          <RoundButton
-            diameter={32}
-            aria-label={muted ? 'Unmute' : 'Mute'}
-            aria-pressed={muted}
-            onClick={onToggleMute}
-            className={muted ? 'text-ink-4' : undefined}
-          >
-            <VolumeIcon className="size-4" aria-hidden />
-          </RoundButton>
-        </Tooltip>
+      <div className="flex w-full max-w-[260px] items-center gap-2.5">
+        <IconButton
+          label={muted ? 'Unmute' : 'Mute'}
+          onClick={onToggleMute}
+          disabled={disabled}
+          className="size-7 text-t3 hover:bg-transparent"
+        >
+          <VolumeIcon size={15} strokeWidth={2} />
+        </IconButton>
         <Slider
-          compact
-          className="flex-1"
           label="Volume"
-          value={muted ? 0 : volume}
           min={0}
           max={1}
-          step={0.01}
-          format={(v) => formatPercent(v)}
+          value={muted ? 0 : volume}
           onChange={onVolume}
+          valueText={`${Math.round((muted ? 0 : volume) * 100)} percent`}
+          disabled={disabled}
         />
       </div>
     </div>

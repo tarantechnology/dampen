@@ -1,48 +1,50 @@
 import type { Metadata, Viewport } from 'next';
-import { Inter } from 'next/font/google';
 import './globals.css';
 
 /**
- * One typeface for the whole app. Inter carries real tabular figures, which
- * every numeric readout in Dampen depends on — a dial whose number changes
- * width while you drag it feels broken. Character comes from wide-tracked
- * uppercase legends (the `.legend` utility), not from a novelty face.
+ * No webfont. The type stack in `globals.css` is the system stack, so on
+ * macOS this renders as SF Pro and on Windows as Segoe UI — the interface
+ * reads as part of the operating system rather than as a web page.
  */
-const ui = Inter({
-  variable: '--font-ui',
-  subsets: ['latin'],
-  display: 'swap',
-});
 
 export const metadata: Metadata = {
-  title: 'Dampen — muffle your music',
+  title: 'Dampen',
   description:
-    'A Spotify player that muffles your music so it recedes behind your attention. One big dial between you and the noise.',
+    'A Spotify player with one control: how far away the music should sound.',
   applicationName: 'Dampen',
 };
 
 export const viewport: Viewport = {
-  themeColor: '#0b0b0d',
-  colorScheme: 'dark',
+  themeColor: [
+    { media: '(prefers-color-scheme: light)', color: '#ffffff' },
+    { media: '(prefers-color-scheme: dark)', color: '#000000' },
+  ],
+  colorScheme: 'light dark',
   width: 'device-width',
   initialScale: 1,
+  viewportFit: 'cover',
 };
+
+/**
+ * Applies the saved theme override before first paint, so a user who picked
+ * Light on a dark system never sees a black flash. Absent the key, the page
+ * follows `prefers-color-scheme`.
+ */
+const THEME_BOOT = `try{var t=localStorage.getItem("dampen.theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t)}catch(e){}`;
 
 export default function RootLayout({ children }: LayoutProps<'/'>) {
   /*
-   * AccentDriver writes the accent ramp into inline custom properties on
-   * <html> and sets data-bypass, both after hydration. That makes the client's
-   * <html> attributes legitimately differ from the server's, so React warns.
-   * suppressHydrationWarning covers this element's own attributes only —
-   * mismatches inside the tree are still reported.
+   * The accent and the `--dampen` macro are written as inline custom
+   * properties on <html> after hydration, and the boot script above may set
+   * data-theme. Both make the client's <html> attributes legitimately differ
+   * from the server's. `suppressHydrationWarning` covers this element only.
    */
   return (
-    <html
-      lang="en"
-      className={`${ui.variable} h-full antialiased`}
-      suppressHydrationWarning
-    >
-      <body className="min-h-full bg-ground text-ink">{children}</body>
+    <html lang="en" className="h-full" suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: THEME_BOOT }} />
+      </head>
+      <body className="min-h-full bg-bg text-t1">{children}</body>
     </html>
   );
 }
