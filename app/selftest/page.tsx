@@ -31,7 +31,22 @@ export default function SelfTestPage() {
     setRunning(true);
     setError(null);
     try {
-      const r = await runSelfTest();
+      /*
+       * Always publish something, even if a suite never settles.
+       *
+       * CI runners have no audio device, so a case awaiting a live
+       * AudioContext can hang indefinitely. Without this race the driver sees
+       * "never reported" after four minutes of silence, which is
+       * indistinguishable from a crashed page and says nothing about which
+       * suite stalled. A timeout that reports *itself* is strictly better
+       * than a hang.
+       */
+      const r = await Promise.race([
+        runSelfTest(),
+        new Promise<never>((_, rej) =>
+          setTimeout(() => rej(new Error('timed out after 150s — a suite never settled')), 150_000),
+        ),
+      ]);
       setReport(r);
       window.__DAMPEN_SELFTEST__ = r;
     } catch (e) {

@@ -149,7 +149,17 @@ async function main() {
        * CI runners have no usable sandbox for a non-root Chrome. Only add
        * this there — never weaken the sandbox on a developer's machine.
        */
-      ...(process.env.CI ? ['--no-sandbox', '--disable-dev-shm-usage'] : []),
+      ...(process.env.CI
+        ? [
+            '--no-sandbox',
+            '--disable-dev-shm-usage',
+            // CI has no sound card. Without a fake device, constructing a
+            // live AudioContext can block forever rather than fail.
+            '--use-fake-device-for-media-stream',
+            '--use-fake-ui-for-media-stream',
+            '--alsa-output-device=plug:default',
+          ]
+        : []),
     ],
     { stdio: 'ignore' },
   );
