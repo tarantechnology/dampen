@@ -217,8 +217,18 @@ async function main() {
 
       console.log('\n=== DSP self test (real browser) ===');
       if (!report) {
-        console.log('  never reported — the page did not finish');
-        failures.push('selftest did not report');
+        let phase = 'unknown';
+        try {
+          const { result } = await cdp.send('Runtime.evaluate', {
+            expression: 'String(window.__DAMPEN_SELFTEST_PHASE__ ?? "never started")',
+            returnByValue: true,
+          });
+          phase = result.value ?? 'unknown';
+        } catch {
+          phase = 'renderer unresponsive';
+        }
+        console.log(`  never reported — stalled in phase: ${phase}`);
+        failures.push(`selftest stalled in phase: ${phase}`);
       } else if (report.error) {
         console.log(`  threw: ${report.error}`);
         failures.push(`selftest threw: ${report.error}`);

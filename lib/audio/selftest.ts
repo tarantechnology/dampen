@@ -34,10 +34,29 @@ export interface SelfTestReport {
 
 /** Run every suite and return a combined report. */
 export async function runSelfTest(): Promise<SelfTestReport> {
+  /*
+   * Announce each suite before entering it. If a suite never settles — which
+   * happens on CI runners with no audio device, where constructing a live
+   * AudioContext can block the main thread hard enough that even timers stop
+   * firing — this is the only evidence of how far the run got. A stall that
+   * names itself is debuggable; a silent one is not.
+   */
+  const mark = (phase: string): void => {
+    if (typeof window !== 'undefined') {
+      (window as unknown as { __DAMPEN_SELFTEST_PHASE__?: string }).__DAMPEN_SELFTEST_PHASE__ =
+        phase;
+    }
+  };
+
+  mark('pure');
   const pure = await runCases(PURE_TESTS);
+  mark('capture');
   const capture = await runCases(CAPTURE_TESTS);
+  mark('offline');
   const offline = await runCases(OFFLINE_TESTS);
+  mark('browser');
   const browser = await runCases(BROWSER_TESTS);
+  mark('done');
   const text = [
     'pure DSP (no AudioContext)',
     formatReport(pure),
