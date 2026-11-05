@@ -1,6 +1,7 @@
 'use client';
 
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
+import { Music } from 'lucide-react';
 import type { SpotifyTrack } from '@/lib/spotify/types';
 import { Artwork } from '@/components/ui/Artwork';
 import { cn } from '@/lib/cn';
@@ -46,15 +47,24 @@ export function NowPlaying({ track, idleLine, className }: NowPlayingProps) {
                 transition={{ duration: reduce ? 0 : 0.35, ease: 'easeOut' }}
                 className="absolute inset-0"
               >
-                <Artwork
-                  images={track?.album.images ?? []}
-                  alt={track ? `${track.album.name} by ${artists}` : 'No album artwork'}
-                  seed={seed}
-                  sizes="(max-width: 640px) 72vw, 340px"
-                  targetWidth={680}
-                  eager
-                  className="size-full"
-                />
+                {track ? (
+                  <Artwork
+                    images={track.album.images}
+                    alt={`${track.album.name} by ${artists}`}
+                    seed={seed}
+                    sizes="(max-width: 640px) 72vw, 340px"
+                    targetWidth={680}
+                    eager
+                    className="size-full"
+                  />
+                ) : (
+                  /* Nothing is playing. A neutral tile, not a colour from a
+                     hash of the word "dampen". */
+                  <div className="flex size-full items-center justify-center bg-fill-1">
+                    <Music size={44} strokeWidth={1.3} aria-hidden className="text-t3" />
+                    <span className="sr-only">Nothing playing</span>
+                  </div>
+                )}
               </motion.div>
             </AnimatePresence>
           </div>

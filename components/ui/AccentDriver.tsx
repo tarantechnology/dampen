@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useSyncExternalStore } from 'react';
 import {
   accentFromPixels,
   accentFromSeed,
@@ -75,18 +75,21 @@ async function deriveAccent(
  * Resolve the effective colour scheme, following the OS unless the user has
  * explicitly overridden it in Settings.
  */
+const DARK_QUERY = '(prefers-color-scheme: dark)';
+
+function subscribeToScheme(onChange: () => void): () => void {
+  const mq = window.matchMedia(DARK_QUERY);
+  mq.addEventListener('change', onChange);
+  return () => mq.removeEventListener('change', onChange);
+}
+
 function useIsDark(): boolean {
   const theme = useUIStore((s) => s.theme);
-  const [systemDark, setSystemDark] = useState(false);
-
-  useEffect(() => {
-    const mq = window.matchMedia('(prefers-color-scheme: dark)');
-    setSystemDark(mq.matches);
-    const onChange = (e: MediaQueryListEvent) => setSystemDark(e.matches);
-    mq.addEventListener('change', onChange);
-    return () => mq.removeEventListener('change', onChange);
-  }, []);
-
+  const systemDark = useSyncExternalStore(
+    subscribeToScheme,
+    () => window.matchMedia(DARK_QUERY).matches,
+    () => false,
+  );
   return theme === 'system' ? systemDark : theme === 'dark';
 }
 

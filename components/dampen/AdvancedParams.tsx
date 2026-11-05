@@ -69,8 +69,7 @@ function ParamGroupSection({
         aria-expanded={open}
         className="flex min-h-[44px] w-full items-center gap-3 px-3.5 py-2.5 text-left transition-colors duration-100 hover:bg-fill-1"
       >
-        <span className="flex-1 truncate text-[15px] text-t1">{group.name}</span>
-        <span className="truncate text-[13px] text-t3">{group.blurb}</span>
+        <span className="flex-1 text-[15px] text-t1">{group.name}</span>
         <ChevronDown
           size={16}
           strokeWidth={2}
@@ -84,6 +83,9 @@ function ParamGroupSection({
 
       {open ? (
         <>
+          <p className="px-3.5 py-2.5 text-[12.5px] leading-[1.45] text-t3">
+            {group.blurb}
+          </p>
           {group.id === 'ambience' ? (
             <Row
               label="Bed"

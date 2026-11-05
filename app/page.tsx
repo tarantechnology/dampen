@@ -1,30 +1,34 @@
-import { AccentDriver } from '@/components/player/AmbientBackdrop';
-import { PlayerIsland } from '@/components/player/PlayerIsland';
 import { LibraryIsland } from '@/components/library/LibraryIsland';
+import { LibrarySheet } from '@/components/library/LibrarySheet';
 import { EngineIsland } from '@/components/dampen/EngineIsland';
+import { SettingsSheet } from '@/components/dampen/SettingsSheet';
+import { PlayerIsland } from '@/components/player/PlayerIsland';
+import { AccentDriver } from '@/components/ui/AccentDriver';
 import { KeyboardLayer } from '@/components/ui/KeyboardLayer';
 import { ShortcutsOverlay } from '@/components/ui/ShortcutsOverlay';
+import { TopBar } from '@/components/ui/TopBar';
 
 /**
  * Dampen.
  *
- * This page is a Server Component and stays one: it ships layout and nothing
- * else. All the behaviour lives in three sibling client islands —
+ * A Server Component that ships layout and nothing else. Two regions:
  *
- *   PlayerIsland   owns `usePlayback()`   (header + player column)
- *   EngineIsland   owns `useDampen()`     (source panel + console column)
- *   LibraryIsland  owns the Spotify Web API hooks (left rail)
+ *   left   a quiet rail — search, four destinations, and the list they open
+ *   right  one centred column — artwork, transport, the Dampen control
  *
- * They are siblings rather than nested on purpose. A dial drag, a 20 Hz meter
- * tick and a seek-bar update all re-render only their own island; the track
- * list cannot see any of them. The little that genuinely crosses between them
- * (the accent amount, the current track URI, the keyboard command registry)
- * goes through selector-based zustand subscriptions in
- * `components/ui/store.ts`.
+ * Everything else is behind the sliders icon in the top-right corner.
  *
- * Each island returns several grid items as a fragment. Placement is by grid
- * line at `xl`, and by `order-*` in the single-column stack below it, so DOM
- * adjacency never constrains the layout.
+ * The behaviour lives in sibling client islands, not nested ones:
+ *
+ *   PlayerIsland   owns `usePlayback()`
+ *   EngineIsland   owns `useDampen()`
+ *   LibraryIsland  owns the Spotify Web API hooks
+ *   SettingsSheet  owns its own copies, and only mounts while open
+ *
+ * A drag on the Dampen control and a 20 Hz meter tick therefore re-render
+ * only their own island; the track list cannot see either. The little that
+ * genuinely crosses between them goes through selector-based zustand
+ * subscriptions in `components/ui/store.ts`.
  */
 export default function Home() {
   return (
@@ -32,18 +36,28 @@ export default function Home() {
       <AccentDriver />
       <KeyboardLayer />
 
-      <div
-        className={[
-          'mx-auto grid min-h-dvh w-full max-w-[1680px] grid-cols-1 content-start gap-4 p-4',
-          'xl:h-dvh xl:grid-cols-[320px_minmax(0,1fr)_minmax(340px,380px)]',
-          'xl:grid-rows-[auto_auto_minmax(0,1fr)] xl:gap-5 xl:overflow-hidden xl:p-5',
-        ].join(' ')}
-      >
-        <PlayerIsland />
-        <EngineIsland />
-        <LibraryIsland />
+      <div className="flex h-dvh w-full overflow-hidden">
+        <aside className="hidden w-[264px] shrink-0 border-r border-hairline lg:block">
+          <LibraryIsland />
+        </aside>
+
+        <main className="flex min-w-0 flex-1 flex-col">
+          <TopBar />
+          <div className="scroll-quiet min-h-0 flex-1 overflow-y-auto">
+            <div className="flex min-h-full flex-col items-center justify-center px-5 pb-10 pt-2">
+              <div className="flex w-full max-w-[380px] flex-col items-center">
+                <PlayerIsland />
+                <div className="mt-10 w-full">
+                  <EngineIsland />
+                </div>
+              </div>
+            </div>
+          </div>
+        </main>
       </div>
 
+      <LibrarySheet />
+      <SettingsSheet />
       <ShortcutsOverlay />
     </>
   );

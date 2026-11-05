@@ -68,10 +68,10 @@ export function Transport({
       <div className="flex items-center gap-2 sm:gap-3">
         <IconButton
           label="Shuffle"
-          active={shuffle}
+          aria-pressed={shuffle}
           disabled={disabled}
           onClick={() => onShuffle(!shuffle)}
-          className={shuffle ? 'text-accent' : undefined}
+          className={shuffle ? 'text-accent hover:text-accent' : undefined}
         >
           <Shuffle size={16} strokeWidth={2.1} />
         </IconButton>
@@ -114,10 +114,10 @@ export function Transport({
 
         <IconButton
           label={REPEAT_LABEL[repeat]}
-          active={repeat !== 'off'}
+          aria-pressed={repeat !== 'off'}
           disabled={disabled}
           onClick={onCycleRepeat}
-          className={repeat !== 'off' ? 'text-accent' : undefined}
+          className={repeat !== 'off' ? 'text-accent hover:text-accent' : undefined}
         >
           {repeat === 'track' ? (
             <Repeat1 size={16} strokeWidth={2.1} />

@@ -1,24 +1,27 @@
 'use client';
 
-import { useCallback, useMemo } from 'react';
+import { useCallback } from 'react';
 import { useAuth, useLibrary, usePlaylistTracks, useSearch } from '@/lib/spotify/useSpotify';
 import type { SpotifyTrack } from '@/lib/spotify/types';
-import { ScrollArea } from '@/components/ui/ScrollArea';
 import { getActions, useUIStore } from '@/components/ui/store';
-import { PlaylistGrid } from './PlaylistGrid';
+import { PlaylistList } from './PlaylistList';
 import { SearchResults } from './SearchResults';
 import { Sidebar } from './Sidebar';
 import { TrackList } from './TrackList';
+
+export interface LibraryIslandProps {
+  /** False inside the mobile sheet, where the sheet header carries the name. */
+  showBrand?: boolean;
+}
 
 /**
  * The library island.
  *
  * Takes no playback subscription: it plays things through the store's action
- * registry, which is read with `getState()` inside the handler. That is the
- * whole reason dragging the dampen dial — or a 20 Hz meter tick, or the
- * seek bar advancing — cannot re-render a two-thousand-row track list.
+ * registry, read with `getState()` inside the handler. That is the whole
+ * reason dragging the Dampen control cannot re-render a track list.
  */
-export function LibraryIsland() {
+export function LibraryIsland({ showBrand = true }: LibraryIslandProps) {
   const auth = useAuth();
   const library = useLibrary();
 
@@ -29,14 +32,12 @@ export function LibraryIsland() {
   const focusNonce = useUIStore((s) => s.searchFocusNonce);
   const selectedPlaylistId = useUIStore((s) => s.selectedPlaylistId);
   const selectPlaylist = useUIStore((s) => s.selectPlaylist);
-
   const currentUri = useUIStore((s) => s.currentUri);
-  const isPlaying = useUIStore((s) => s.isPlaying);
 
   const playlistTracks = usePlaylistTracks(view === 'playlists' ? selectedPlaylistId : null);
   const search = useSearch(view === 'search' ? query : '');
 
-  const playTracks = useCallback((tracks: SpotifyTrack[], index: number) => {
+  const playFrom = useCallback((tracks: SpotifyTrack[], index: number) => {
     getActions().playTrack?.(tracks.slice(index).map((t) => t.uri));
   }, []);
 
@@ -48,26 +49,14 @@ export function LibraryIsland() {
     [selectPlaylist, setView],
   );
 
-  const openPlaylistContext = useCallback((uri: string) => {
-    getActions().playTrack?.([], uri, 0);
-  }, []);
+  const openPlaylistMeta =
+    library.playlists.find((p) => p.id === selectedPlaylistId) ?? null;
 
-  const counts = useMemo(
-    () => ({
-      playlists: library.playlists.length || undefined,
-      liked: library.savedTracks.length || undefined,
-      recent: library.recentlyPlayed.length || undefined,
-      top: library.topTracks.length || undefined,
-    }),
-    [library],
-  );
-
-  const openPlaylistId = selectedPlaylistId;
-  const openPlaylistMeta = library.playlists.find((p) => p.id === openPlaylistId) ?? null;
+  const signedOutBody = 'Connect Spotify to see your library here.';
 
   return (
     <Sidebar
-      className="order-5 min-h-[420px] xl:col-start-1 xl:row-start-2 xl:row-span-2 xl:min-h-0"
+      showBrand={showBrand}
       view={view}
       onViewChange={(next) => {
         setView(next);
@@ -76,128 +65,119 @@ export function LibraryIsland() {
       query={query}
       onQueryChange={(q) => {
         setQuery(q);
-        if (q.length > 0) setView('search');
+        setView(q.length > 0 ? 'search' : 'playlists');
       }}
       focusNonce={focusNonce}
+      openTitle={view === 'playlists' && selectedPlaylistId ? openPlaylistMeta?.name ?? 'Playlist' : null}
+      onBack={() => selectPlaylist(null)}
       user={auth.user}
       authStatus={auth.status}
       onLogin={auth.login}
-      onLogout={auth.logout}
-      counts={counts}
     >
-      <ScrollArea className="p-2.5">
-        {view === 'playlists' ? (
-          openPlaylistId ? (
-            <div className="flex h-full flex-col">
-              <button
-                type="button"
-                onClick={() => selectPlaylist(null)}
-                className="mb-2 self-start rounded-lg px-1.5 py-1 text-[11.5px] text-ink-3 transition-colors hover:bg-white/[0.06] hover:text-ink"
-              >
-                &larr; All playlists
-              </button>
-              <h3 className="mb-2 truncate px-1.5 text-[13px] font-semibold text-ink">
-                {openPlaylistMeta?.name ?? 'Playlist'}
-              </h3>
-              <TrackList
-                label={openPlaylistMeta?.name ?? 'Playlist tracks'}
-                tracks={playlistTracks.tracks}
-                isLoading={playlistTracks.isLoading}
-                currentUri={currentUri}
-                isPlaying={isPlaying}
-                onPlay={(_, index) => playTracks(playlistTracks.tracks, index)}
-                meta="album"
-                emptyTitle="This playlist is empty"
-                emptyBody="Add something to it in Spotify and it will show up here."
-                className="min-h-[360px] flex-1"
-              />
-            </div>
-          ) : (
-            <PlaylistGrid
-              label="Your playlists"
-              playlists={library.playlists}
-              isLoading={library.isLoading}
-              selectedId={selectedPlaylistId}
-              onOpen={openPlaylist}
-              onPlay={openPlaylistContext}
-            />
-          )
-        ) : null}
+      {library.error ? (
+        <p className="shrink-0 px-2 py-2 text-[12px] leading-snug text-t3">
+          Could not reach Spotify.{' '}
+          <button
+            type="button"
+            onClick={library.refresh}
+            className="text-accent underline-offset-2 hover:underline"
+          >
+            Retry
+          </button>
+        </p>
+      ) : null}
 
-        {view === 'liked' ? (
+      <div className="flex min-h-0 flex-1 flex-col">
+      {view === 'playlists' ? (
+        selectedPlaylistId ? (
           <TrackList
-            label="Liked songs"
-            tracks={library.savedTracks}
-            isLoading={library.isLoading}
+            label={openPlaylistMeta?.name ?? 'Playlist'}
+            tracks={playlistTracks.tracks}
+            isLoading={playlistTracks.isLoading}
             currentUri={currentUri}
-            isPlaying={isPlaying}
-            onPlay={(_, index) => playTracks(library.savedTracks, index)}
-            meta="added"
-            emptyTitle="No liked songs"
-            emptyBody="Hit the heart on anything in Spotify and it lands here."
-            className="min-h-[420px]"
+            onPlay={(_, index) => playFrom(playlistTracks.tracks, index)}
+            emptyTitle="This playlist is empty"
+            emptyBody="Add something to it in Spotify and it will show up here."
           />
-        ) : null}
-
-        {view === 'recent' ? (
-          <TrackList
-            label="Recently played"
-            tracks={library.recentlyPlayed}
+        ) : (
+          <PlaylistList
+            playlists={library.playlists}
             isLoading={library.isLoading}
-            currentUri={currentUri}
-            isPlaying={isPlaying}
-            onPlay={(_, index) => playTracks(library.recentlyPlayed, index)}
-            meta="played"
-            emptyTitle="Nothing played yet"
-            emptyBody="Spotify keeps the last fifty tracks you listened to. Play something and come back."
-            className="min-h-[420px]"
+            onOpen={openPlaylist}
+            emptyBody={
+              auth.status === 'authed'
+                ? 'Playlists you own or follow in Spotify appear here.'
+                : signedOutBody
+            }
           />
-        ) : null}
+        )
+      ) : null}
 
-        {view === 'top' ? (
-          <TrackList
-            label="Top tracks"
-            tracks={library.topTracks}
-            isLoading={library.isLoading}
-            currentUri={currentUri}
-            isPlaying={isPlaying}
-            onPlay={(_, index) => playTracks(library.topTracks, index)}
-            meta="album"
-            emptyTitle="No top tracks yet"
-            emptyBody="Spotify needs a few weeks of listening before it will rank anything."
-            className="min-h-[420px]"
-          />
-        ) : null}
+      {view === 'liked' ? (
+        <TrackList
+          label="Liked songs"
+          tracks={library.savedTracks}
+          isLoading={library.isLoading}
+          currentUri={currentUri}
+          onPlay={(_, index) => playFrom(library.savedTracks, index)}
+          emptyTitle="No liked songs"
+          emptyBody={
+            auth.status === 'authed'
+              ? 'Hit the heart on anything in Spotify and it lands here.'
+              : signedOutBody
+          }
+        />
+      ) : null}
 
-        {view === 'search' ? (
+      {view === 'recent' ? (
+        <TrackList
+          label="Recently played"
+          tracks={library.recentlyPlayed}
+          isLoading={library.isLoading}
+          currentUri={currentUri}
+          onPlay={(_, index) => playFrom(library.recentlyPlayed, index)}
+          emptyTitle="Nothing played yet"
+          emptyBody={
+            auth.status === 'authed'
+              ? 'Play something and the last fifty tracks show up here.'
+              : signedOutBody
+          }
+        />
+      ) : null}
+
+      {view === 'top' ? (
+        <TrackList
+          label="Top tracks"
+          tracks={library.topTracks}
+          isLoading={library.isLoading}
+          currentUri={currentUri}
+          onPlay={(_, index) => playFrom(library.topTracks, index)}
+          emptyTitle="No top tracks yet"
+          emptyBody={
+            auth.status === 'authed'
+              ? 'Spotify needs a few weeks of listening before it ranks anything.'
+              : signedOutBody
+          }
+        />
+      ) : null}
+
+      {view === 'search' ? (
+        <div className="scroll-quiet h-full overflow-y-auto">
           <SearchResults
             query={query}
             results={search.results}
             isLoading={search.isLoading}
             currentUri={currentUri}
-            isPlaying={isPlaying}
-            onPlayTrack={(_, index) => playTracks(search.results?.tracks ?? [], index)}
+            onPlayTrack={(_, index) => playFrom(search.results?.tracks ?? [], index)}
             onOpenPlaylist={openPlaylist}
             onOpenArtist={(artist) => {
               setQuery(artist.name);
               setView('search');
             }}
           />
-        ) : null}
-
-        {library.error ? (
-          <p className="mt-3 px-1.5 text-[11.5px] text-ink-4">
-            Could not reach Spotify: {library.error}{' '}
-            <button
-              type="button"
-              onClick={library.refresh}
-              className="underline decoration-ink-4 underline-offset-2 hover:text-ink"
-            >
-              Retry
-            </button>
-          </p>
-        ) : null}
-      </ScrollArea>
+        </div>
+      ) : null}
+      </div>
     </Sidebar>
   );
 }

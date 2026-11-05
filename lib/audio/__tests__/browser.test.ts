@@ -24,7 +24,8 @@
  * forever under the autoplay policy).
  */
 
-import { DampenEngine, ambienceAllowedFor } from '../engine';
+import { DampenEngine, ambienceAllowedFor, isOutputSelectable } from '../engine';
+import { listOutputDevices, pickPhysicalOutput } from '../capture';
 import { BUTTERWORTH_Q_DB, BUTTERWORTH_Q_LINEAR } from '../dsp';
 import { DEFAULT_PARAMS, getPreset, PRESETS, resolveParams } from '../presets';
 import { workletsReady } from '../worklets';
@@ -353,6 +354,91 @@ const runtimeCases: TestCase[] = [
     await sleep(SETTLE_MS);
     const w = worstDeviation(eng.getFilterResponse(freqs), freqs);
     assert(Number.isFinite(w.db) && w.db < 0.05, `did not recover: worst ${w.db} dB`);
+  }),
+
+  browserCase('browser: setSinkId is available and an empty id always works', async () => {
+    const eng = await engine();
+    // Chrome 110+. Measured true in Chrome 156.
+    assertEqual(isOutputSelectable(), true, 'AudioContext.setSinkId should exist');
+    assertEqual(eng.outputSelectable, true, 'engine agrees');
+    const r = await eng.setOutputDevice('');
+    assert(r.ok, `setting the system default should succeed: ${JSON.stringify(r)}`);
+    assertEqual(eng.outputDeviceId, '', 'records the selection');
+  }),
+
+  browserCase('browser: an unknown output id fails as a typed no-device result', async () => {
+    const eng = await engine();
+    const r = await eng.setOutputDevice('0'.repeat(64));
+    assert(!r.ok, 'must not report success');
+    if (r.ok) return;
+    // Measured: Chrome rejects with NotFoundError for an id it does not know.
+    assertEqual(r.code, 'no-device', `unexpected code: ${r.code} / ${r.message}`);
+    assert(r.message.length > 10, 'carries a message for the UI');
+  }),
+
+  browserCase('browser: a real output device can be selected when one is enumerable', async () => {
+    const eng = await engine();
+    const outputs = await listOutputDevices();
+    eng.setOutputDevices(outputs);
+    const target = pickPhysicalOutput(outputs);
+    if (!target) {
+      /*
+       * No named output is enumerable, which means the origin holds no media
+       * permission grant — measured behaviour: without it `enumerateDevices`
+       * returns one blank `audiooutput` entry and there is no id to pass.
+       * That is a legitimate environment, not a failure.
+       */
+      assertEqual(outputs.length, 0, 'with no grant the list should be empty, not blank entries');
+      return;
+    }
+    const r = await eng.setOutputDevice(target.deviceId);
+    assert(r.ok, `selecting "${target.label}" failed: ${JSON.stringify(r)}`);
+    assertEqual(eng.outputDeviceId, target.deviceId, 'records the selection');
+    await eng.setOutputDevice('');
+  }),
+
+  browserCase('browser: the auto-rescue moves the output off a captured device', async () => {
+    const eng = await engine();
+    const outputs = await listOutputDevices();
+    const physical = pickPhysicalOutput(outputs);
+    if (!physical) return; // no grant; covered above
+
+    // Fabricate the macOS Path B state: capture the device that the output is
+    // currently resolving to, so input and output are the same hardware.
+    const live = outputs.find((o) => !o.isDefault && o.deviceId === physical.deviceId);
+    assert(live !== undefined, 'expected the physical output in the list');
+    if (!live) return;
+
+    await eng.setOutputDevice(live.deviceId);
+    eng.setInputMode('capture');
+    eng.setCaptureDevice(
+      {
+        deviceId: 'in-same',
+        label: live.label,
+        likelyVirtual: true,
+        passthrough: 'none',
+        groupId: live.groupId,
+      },
+      outputs,
+    );
+    assertEqual(eng.feedbackRisk, true, 'capturing our own output must be flagged');
+    assertEqual(eng.feedback.reason, 'same-device', 'reason');
+
+    // The rescue can only move us if there is somewhere else to go.
+    const alternatives = outputs.filter(
+      (o) => !o.isDefault && !o.likelyVirtual && o.deviceId !== live.deviceId,
+    );
+    const result = await eng.autoSelectSafeOutput();
+    if (alternatives.length === 0) {
+      assert(result === null || result.ok === false, 'nowhere safe to move to');
+    } else if (result && result.ok) {
+      assert(eng.outputDeviceId !== live.deviceId, 'should have moved off the captured device');
+      assertEqual(eng.outputAutoSelected, true, 'and should say that it chose for the user');
+    }
+
+    eng.setCaptureDevice(null);
+    eng.setInputMode('local');
+    await eng.setOutputDevice('');
   }),
 
   browserCase('browser: dispose tears everything down', async () => {

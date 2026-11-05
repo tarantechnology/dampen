@@ -25,10 +25,15 @@ import {
   isLikelyVirtual,
   pickLikelyDevice,
   preferredContextSampleRate,
+  pickPhysicalOutput,
+  resolveOutput,
+  resolveSystemDefaultOutput,
+  sameHardware,
   type CaptureDevice,
   type CaptureStreamSettings,
+  type OutputDevice,
 } from '../capture';
-import { ambienceAllowedFor, latencyHintFor } from '../engine';
+import { ambienceAllowedFor, isOutputSelectable, latencyHintFor } from '../engine';
 import { assert, assertClose, assertEqual, type TestCase } from './harness';
 
 /* ------------------------------------------------------------------ *
@@ -289,14 +294,20 @@ const deviceTests: TestCase[] = [
  * Feedback risk
  * ------------------------------------------------------------------ */
 
-function output(groupId: string): MediaDeviceInfo {
+function output(groupId: string, label = `Output ${groupId}`): OutputDevice {
   return {
     deviceId: `out-${groupId}`,
+    label,
+    likelyVirtual: isLikelyVirtual(label),
+    passthrough: describeDevice(label).passthrough,
     groupId,
-    kind: 'audiooutput',
-    label: `Output ${groupId}`,
-    toJSON: () => ({}),
+    isDefault: false,
   };
+}
+
+/** Chrome's `'default'` pseudo-device, which shares the real default's group. */
+function defaultOutput(groupId: string, label: string): OutputDevice {
+  return { ...output(groupId, label), deviceId: 'default', isDefault: true };
 }
 
 const feedbackTests: TestCase[] = [
@@ -421,10 +432,228 @@ const policyTests: TestCase[] = [
   },
 ];
 
+/* ------------------------------------------------------------------ *
+ * Output routing — the macOS Path B fix
+ * ------------------------------------------------------------------ */
+
+const outputTests: TestCase[] = [
+  {
+    name: 'output: sameHardware matches on groupId, then on label',
+    run: () => {
+      assertEqual(
+        sameHardware({ groupId: 'g1', label: 'A' }, { groupId: 'g1', label: 'B' }),
+        true,
+        'groupId wins',
+      );
+      assertEqual(
+        sameHardware({ groupId: '', label: 'BlackHole 2ch' }, { groupId: '', label: 'BlackHole 2ch' }),
+        true,
+        'label fallback when groups are unknown',
+      );
+      // Chrome labels the default pseudo-device "Default - <name>".
+      assertEqual(
+        sameHardware(
+          { groupId: '', label: 'BlackHole 2ch' },
+          { groupId: '', label: 'Default - BlackHole 2ch' },
+        ),
+        true,
+        'the Default prefix is stripped',
+      );
+      assertEqual(
+        sameHardware({ groupId: 'g1', label: 'A' }, { groupId: 'g2', label: 'B' }),
+        false,
+        'different hardware',
+      );
+      assertEqual(
+        sameHardware({ groupId: '', label: '' }, { groupId: '', label: '' }),
+        false,
+        'two unknowns are not a match',
+      );
+    },
+  },
+  {
+    name: 'output: the default pseudo-device resolves to the real device',
+    run: () => {
+      const outs = [
+        defaultOutput('gBH', 'Default - BlackHole 2ch'),
+        output('gBH', 'BlackHole 2ch'),
+        output('gSpk', 'MacBook Pro Speakers'),
+      ];
+      const resolved = resolveSystemDefaultOutput(outs);
+      assertEqual(resolved?.label, 'BlackHole 2ch', 'resolves through the group');
+      assertEqual(resolved?.isDefault, false, 'and gives the real entry, not the pseudo one');
+      // An empty or 'default' selection follows the system.
+      assertEqual(resolveOutput(outs, '')?.label, 'BlackHole 2ch', 'empty selection');
+      assertEqual(resolveOutput(outs, 'default')?.label, 'BlackHole 2ch', "'default' selection");
+      // An explicit selection does not.
+      assertEqual(resolveOutput(outs, 'out-gSpk')?.label, 'MacBook Pro Speakers', 'explicit');
+      assertEqual(resolveOutput(outs, 'gone'), null, 'a missing device resolves to null');
+      assertEqual(resolveSystemDefaultOutput([]), null, 'empty list');
+    },
+  },
+  {
+    name: 'output: pickPhysicalOutput skips virtual sinks and the pseudo-device',
+    run: () => {
+      const outs = [
+        defaultOutput('gBH', 'Default - BlackHole 2ch'),
+        output('gBH', 'BlackHole 2ch'),
+        output('gSpk', 'MacBook Pro Speakers'),
+        output('gHp', 'External Headphones'),
+      ];
+      assertEqual(pickPhysicalOutput(outs)?.label, 'MacBook Pro Speakers', 'first real device');
+      assertEqual(
+        pickPhysicalOutput([defaultOutput('gBH', 'Default - BlackHole 2ch'), output('gBH', 'BlackHole 2ch')]),
+        null,
+        'nothing physical available',
+      );
+      assertEqual(pickPhysicalOutput([]), null, 'empty list');
+    },
+  },
+  {
+    name: 'output: THE macOS case — capture BlackHole while the system default is BlackHole',
+    run: () => {
+      /*
+       * The exact state the user will be in: Spotify has no per-app output
+       * picker, so the system default has been set to BlackHole to feed
+       * Dampen. Chrome then also plays into BlackHole, which is Dampen's own
+       * input. Before output selection existed the guard could not see this at
+       * all, because the selected output id is just '' (follow the system).
+       */
+      const outs = [
+        defaultOutput('gBH', 'Default - BlackHole 2ch'),
+        output('gBH', 'BlackHole 2ch'),
+        output('gSpk', 'MacBook Pro Speakers'),
+      ];
+      const bh = device('BlackHole 2ch', 'gBH');
+
+      const followingSystem = assessFeedbackRisk(bh, outs, '');
+      assertEqual(followingSystem.risk, true, 'must be flagged');
+      assertEqual(followingSystem.reason, 'same-device', 'reason');
+      assert(
+        /real output|speakers|headphones/i.test(followingSystem.message),
+        'the message must tell the user to pick a real output: ' + followingSystem.message,
+      );
+
+      // With the output explicitly moved to the speakers, the loop is broken.
+      const fixed = assessFeedbackRisk(bh, outs, 'out-gSpk');
+      assertEqual(fixed.risk, false, 'picking a physical output clears it');
+
+      // Explicitly choosing the virtual device as the output is still a loop.
+      const explicitLoop = assessFeedbackRisk(bh, outs, 'out-gBH');
+      assertEqual(explicitLoop.reason, 'same-device', 'explicit self-routing is still a loop');
+      assert(!/system default can stay/i.test(explicitLoop.message), 'different wording for an explicit choice');
+    },
+  },
+  {
+    name: 'output: a pure sink with the default on real speakers is safe',
+    run: () => {
+      const outs = [
+        defaultOutput('gSpk', 'Default - MacBook Pro Speakers'),
+        output('gSpk', 'MacBook Pro Speakers'),
+        output('gBH', 'BlackHole 2ch'),
+      ];
+      const a = assessFeedbackRisk(device('BlackHole 2ch', 'gBH'), outs, '');
+      assertEqual(a.risk, false, 'no loop: input and output are different hardware');
+    },
+  },
+  {
+    name: 'output: a passthrough device is still flagged once the loop is ruled out',
+    run: () => {
+      const outs = [
+        defaultOutput('gSpk', 'Default - MacBook Pro Speakers'),
+        output('gSpk', 'MacBook Pro Speakers'),
+      ];
+      const a = assessFeedbackRisk(device('Background Music', 'gBM'), outs, 'out-gSpk');
+      assertEqual(a.reason, 'passthrough', 'the lesser hazard still reports');
+    },
+  },
+  {
+    name: 'output: the real macOS device list classifies and ranks correctly',
+    run: () => {
+      /*
+       * Captured verbatim from `enumerateDevices()` on the target machine
+       * (Chrome 156, macOS) — a regression test against the actual hardware
+       * rather than an idealised list. Note that BlackHole's input and output
+       * halves share both deviceId and groupId, that every virtual driver
+       * carries a " (Virtual)" suffix, and that the HDMI monitor is listed
+       * *before* the built-in speakers.
+       */
+      const outs: OutputDevice[] = [
+        defaultOutput('58919f8e', 'Default - MacBook Pro Speakers (Built-in)'),
+        output('586989ac', 'NZXTCANVAS27Q (HDMI)'),
+        output('2c1bf563', 'Background Music (Virtual)'),
+        output('d5b7fc9f', 'Background Music (UI Sounds) (Virtual)'),
+        output('412e064a', 'BlackHole 2ch (Virtual)'),
+        output('58919f8e', 'MacBook Pro Speakers (Built-in)'),
+        output('57a1d679', 'Microsoft Teams Audio Device (Virtual)'),
+        output('e33c4e78', 'LoomAudioDevice (Virtual)'),
+        output('3d0a8f12', 'ZoomAudioDevice (Virtual)'),
+      ];
+
+      // The " (Virtual)" suffix alone is enough to classify all of them.
+      for (const label of [
+        'Background Music (Virtual)',
+        'BlackHole 2ch (Virtual)',
+        'Microsoft Teams Audio Device (Virtual)',
+        'LoomAudioDevice (Virtual)',
+        'ZoomAudioDevice (Virtual)',
+      ]) {
+        assert(isLikelyVirtual(label), `should be virtual: ${label}`);
+      }
+      assert(!isLikelyVirtual('MacBook Pro Speakers (Built-in)'), 'speakers are not virtual');
+      assert(!isLikelyVirtual('NZXTCANVAS27Q (HDMI)'), 'a monitor is not virtual');
+
+      // 'default' shares the speakers' groupId, so it resolves through to them.
+      assertEqual(
+        resolveSystemDefaultOutput(outs)?.label,
+        'MacBook Pro Speakers (Built-in)',
+        'default resolves to real hardware',
+      );
+      // The system default is real hardware, so that is what we would pick.
+      assertEqual(
+        pickPhysicalOutput(outs)?.label,
+        'MacBook Pro Speakers (Built-in)',
+        'prefers what the user is demonstrably listening to',
+      );
+
+      // Now the Path B state: the system default has been moved to BlackHole.
+      const pathB: OutputDevice[] = [
+        defaultOutput('412e064a', 'Default - BlackHole 2ch (Virtual)'),
+        ...outs.slice(1),
+      ];
+      assertEqual(
+        resolveSystemDefaultOutput(pathB)?.label,
+        'BlackHole 2ch (Virtual)',
+        'default now resolves to the virtual sink',
+      );
+      // The default is virtual, so the ranking must skip the HDMI monitor and
+      // land on the speakers.
+      assertEqual(
+        pickPhysicalOutput(pathB)?.label,
+        'MacBook Pro Speakers (Built-in)',
+        'skips the HDMI monitor even though it is listed first',
+      );
+
+      // And the guard must see the loop.
+      const risk = assessFeedbackRisk(device('BlackHole 2ch (Virtual)', '412e064a'), pathB, '');
+      assertEqual(risk.reason, 'same-device', 'the real-world loop is detected');
+    },
+  },
+  {
+    name: 'output: isOutputSelectable is a safe boolean in any environment',
+    run: () => {
+      // Node has no AudioContext at all; the browser suite asserts the true case.
+      const v = isOutputSelectable();
+      assertEqual(typeof v, 'boolean', 'always a boolean, never a throw');
+    },
+  },
+];
+
 export const CAPTURE_TESTS: readonly TestCase[] = [
   ...qTests,
   ...guardTests,
   ...deviceTests,
   ...feedbackTests,
+  ...outputTests,
   ...policyTests,
 ];

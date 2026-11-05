@@ -77,6 +77,30 @@ export interface CaptureDevice {
   note?: string;
 }
 
+/**
+ * An audio **output** endpoint.
+ *
+ * The output side matters as much as the input on macOS, and for a reason that
+ * is not obvious: the Spotify desktop app has no per-application output
+ * picker, so it follows the **system default output**. Routing Spotify into
+ * BlackHole therefore means setting the *system* default to BlackHole — at
+ * which point Chrome's own output goes there too, the user hears nothing, and
+ * Dampen's output lands straight back in its own input. Path B is unusable
+ * until the page picks its output explicitly (see `setOutputDevice` in
+ * `engine.ts`).
+ */
+export interface OutputDevice {
+  /** `'default'` is Chrome's pseudo-device meaning "follow the system". */
+  deviceId: string;
+  label: string;
+  likelyVirtual: boolean;
+  passthrough: CapturePassthrough;
+  groupId: string;
+  /** True for the `'default'` pseudo-device. */
+  isDefault: boolean;
+  note?: string;
+}
+
 /** The real, negotiated properties of an open capture stream. */
 export interface CaptureStreamSettings {
   /** Hz, from `track.getSettings()`. `null` when the browser does not report it. */
@@ -258,38 +282,136 @@ export interface FeedbackAssessment {
 const NO_RISK: FeedbackAssessment = { risk: false, reason: 'none', message: '' };
 
 /**
- * Decide whether capturing `device` while playing out through `outputs` can
- * produce a doubled or runaway signal.
+ * Do these two endpoints refer to the same piece of hardware?
  *
- * Three distinct hazards, in descending severity:
+ * `groupId` is the spec's answer and the one to trust: the input and output
+ * halves of one device get different `deviceId`s but share a group. It can be
+ * empty before permission is granted, though, so the label is a fallback —
+ * BlackHole's input and output are both labelled "BlackHole 2ch", which is
+ * exactly the case that matters here.
+ */
+export function sameHardware(
+  a: { groupId: string; label: string },
+  b: { groupId: string; label: string },
+): boolean {
+  if (a.groupId && b.groupId && a.groupId === b.groupId) return true;
+  if (!a.label || !b.label) return false;
+  // Chrome prefixes the default pseudo-device's label ("Default - Speakers").
+  const strip = (l: string) => l.replace(/^default\s*[-–]\s*/i, '').trim().toLowerCase();
+  return strip(a.label) === strip(b.label);
+}
+
+/**
+ * Which physical output `'default'` (or an empty selection) actually resolves
+ * to.
  *
- *  1. **Same physical device.** If the chosen input shares a `groupId` with an
- *     audio *output*, we are very likely capturing the thing we are playing
- *     into — a closed loop, and the only case that can actually howl.
- *     `groupId` is the right signal here: `deviceId`s differ between the input
- *     and output halves of one device, but the group is shared by spec.
+ * Chrome lists a `'default'` pseudo-device whose `groupId` is that of the real
+ * current default, so the real one can be recovered by matching groups. This
+ * is what lets the guard catch "capture = BlackHole, output = system default,
+ * and the system default *is* BlackHole" — the single most likely real-world
+ * footgun on macOS, and one that is invisible if you only look at the
+ * selected `deviceId`.
+ */
+export function resolveSystemDefaultOutput(
+  outputs: readonly OutputDevice[],
+): OutputDevice | null {
+  const pseudo = outputs.find((o) => o.isDefault);
+  if (!pseudo) return outputs[0] ?? null;
+  const real = outputs.find((o) => !o.isDefault && sameHardware(o, pseudo));
+  return real ?? pseudo;
+}
+
+/** The output a given selection resolves to. `''`/`'default'` follow the system. */
+export function resolveOutput(
+  outputs: readonly OutputDevice[],
+  selectedId: string,
+): OutputDevice | null {
+  if (!selectedId || selectedId === 'default') return resolveSystemDefaultOutput(outputs);
+  return outputs.find((o) => o.deviceId === selectedId) ?? null;
+}
+
+/**
+ * Labels that indicate an output the user is actually listening to, as opposed
+ * to one that merely exists.
+ *
+ * This ranking is not cosmetic. On the machine this was developed against,
+ * `enumerateDevices` lists `"NZXTCANVAS27Q (HDMI)"` *before*
+ * `"MacBook Pro Speakers (Built-in)"`, so "first non-virtual device" would
+ * auto-route Dampen to a monitor that may be off or have no speakers at all —
+ * and the whole point of the auto-rescue is that the user hears something.
+ */
+const LISTENING_OUTPUT_PATTERN = /built-?in|internal|speaker|headphone|airpod|earbud|usb audio/i;
+
+/**
+ * The best output that is real hardware — built-in speakers, headphones, an
+ * interface — skipping virtual sinks and the `'default'` pseudo-device.
+ *
+ * Used to rescue the user automatically: if they have routed the system
+ * default to BlackHole so Spotify feeds Dampen, this is where Dampen should
+ * send its own audio.
+ *
+ * Preference order: the device the system default resolves to (if it is real
+ * hardware — the user is demonstrably listening to it), then anything that
+ * looks like speakers or headphones, then any other non-virtual output.
+ */
+export function pickPhysicalOutput(outputs: readonly OutputDevice[]): OutputDevice | null {
+  const usable = outputs.filter((o) => !o.isDefault && !o.likelyVirtual && o.deviceId);
+  if (usable.length === 0) return null;
+
+  const systemDefault = resolveSystemDefaultOutput(outputs);
+  if (systemDefault && !systemDefault.likelyVirtual) {
+    const match = usable.find((o) => o.deviceId === systemDefault.deviceId);
+    if (match) return match;
+  }
+  return usable.find((o) => LISTENING_OUTPUT_PATTERN.test(o.label)) ?? usable[0];
+}
+
+/**
+ * Decide whether capturing `device` while playing out of `selectedOutputId`
+ * can produce a doubled or runaway signal.
+ *
+ * Hazards, in descending severity:
+ *
+ *  1. **Same physical device.** The chosen input *is* the device we are
+ *     playing into — a closed loop, and the only case that can actually howl.
+ *     Checked against the output the selection really resolves to, so
+ *     "output = system default = BlackHole" is caught.
  *  2. **Passthrough.** No runaway, but the user hears two copies ~8 ms apart.
  *  3. **A real microphone.** Capturing the room while playing through speakers
  *     is acoustic feedback by construction.
+ *
+ * @param selectedOutputId what the page has asked for via `setSinkId`; `''`
+ *                         or `'default'` means it follows the system default.
  */
 export function assessFeedbackRisk(
   device: CaptureDevice | null,
-  outputs: readonly MediaDeviceInfo[] = [],
+  outputs: readonly OutputDevice[] = [],
+  selectedOutputId: string = '',
 ): FeedbackAssessment {
   if (!device) return NO_RISK;
 
-  if (device.groupId) {
-    const shared = outputs.some(
-      (o) => o.kind === 'audiooutput' && o.groupId === device.groupId,
-    );
-    if (shared) {
-      return {
-        risk: true,
-        reason: 'same-device',
-        message:
-          'This input belongs to the same device Dampen is playing out of, so its output would be captured again and build up. Choose a different input or a different output.',
-      };
-    }
+  const live = resolveOutput(outputs, selectedOutputId);
+
+  if (live && sameHardware(device, live)) {
+    const followsSystem = !selectedOutputId || selectedOutputId === 'default';
+    return {
+      risk: true,
+      reason: 'same-device',
+      message: followsSystem
+        ? `Dampen is playing out of "${live.label}", which is also the input it is capturing — so its own output is fed straight back in. Pick a real output device (your speakers or headphones) for Dampen; the system default can stay on "${live.label}" so Spotify keeps feeding it.`
+        : `The selected input and output are the same device ("${live.label}"), so Dampen would capture its own output. Choose a different one.`,
+    };
+  }
+
+  // No usable output list: fall back to the conservative group check, which is
+  // all we could do before the output side was selectable.
+  if (!live && device.groupId && outputs.some((o) => o.groupId === device.groupId)) {
+    return {
+      risk: true,
+      reason: 'same-device',
+      message:
+        'This input belongs to the same device Dampen is playing out of, so its output would be captured again and build up. Choose a different input or a different output.',
+    };
   }
 
   if (device.passthrough === 'likely') {
@@ -552,11 +674,74 @@ export async function listCaptureDevices(
     .sort((a, b) => rank(a) - rank(b));
 }
 
-/** Enumerate audio *outputs*, for {@link assessFeedbackRisk}. */
-export async function listOutputDevices(): Promise<MediaDeviceInfo[]> {
+function toOutputDevice(d: MediaDeviceInfo): OutputDevice {
+  const isDefault = d.deviceId === 'default';
+  const described = describeDevice(d.label);
+  return {
+    deviceId: d.deviceId,
+    label: d.label || (isDefault ? 'System default' : `Audio output ${d.deviceId.slice(0, 6)}`),
+    likelyVirtual: isLikelyVirtual(d.label),
+    passthrough: described.passthrough,
+    groupId: d.groupId,
+    isDefault,
+    note: described.note,
+  };
+}
+
+/**
+ * Enumerate audio **outputs**, so the page can choose where Dampen plays.
+ *
+ * Mirrors {@link listCaptureDevices}, including the labels problem — but the
+ * output side is stricter, and this was measured rather than assumed.
+ *
+ * **Verified in Chrome 156 (macOS):** with no media permission grant,
+ * `enumerateDevices()` returns exactly **one** `audiooutput` entry, and it has
+ * an empty `deviceId`, an empty `groupId` and an empty `label`. So without the
+ * grant there is nothing nameable to select at all — `setSinkId` is not
+ * refused, there is simply no device id to pass it. After the grant the full
+ * list appears with real ids. Hence: **request capture permission first, then
+ * choose an output.** Blank entries are dropped here so the picker shows an
+ * empty list (and the UI can say why) rather than a nameless placeholder.
+ *
+ * The probe is the *same* microphone prompt — there is no separate "speaker
+ * permission" — so it is skipped by default (`probePermission` is `false`) on
+ * the assumption that the capture flow has already asked, or is about to.
+ * Pass `{ probePermission: true }` only from a user gesture.
+ *
+ * Physical devices are listed before virtual ones, because when the system
+ * default has been pointed at BlackHole the thing the user wants for Dampen's
+ * output is their actual speakers.
+ */
+export async function listOutputDevices(
+  options: { probePermission?: boolean } = {},
+): Promise<OutputDevice[]> {
   const devices = mediaDevices();
-  const all = await devices.enumerateDevices();
-  return all.filter((d) => d.kind === 'audiooutput');
+
+  const read = async (): Promise<MediaDeviceInfo[]> => {
+    const all = await devices.enumerateDevices();
+    return all.filter((d) => d.kind === 'audiooutput');
+  };
+
+  let outs = await read();
+  const hasLabels = outs.some((d) => d.label.length > 0);
+  if (!hasLabels && (options.probePermission ?? false)) {
+    try {
+      await probePermission(devices);
+    } catch {
+      // A denied probe still leaves a usable (if unlabelled) list; the caller
+      // will have been told about the denial by the capture flow.
+    }
+    outs = await read();
+  }
+
+  const rank = (o: OutputDevice): number => {
+    if (o.isDefault) return 1; // useful to offer, but not the thing to auto-pick
+    return o.likelyVirtual ? 2 : 0;
+  };
+  return outs
+    .filter((d) => d.deviceId.length > 0)
+    .map(toOutputDevice)
+    .sort((a, b) => rank(a) - rank(b));
 }
 
 /**

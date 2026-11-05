@@ -116,11 +116,13 @@ function contrastWith(lum: number, otherLum: number): number {
 /**
  * Artwork colours cannot be trusted: a cover is routinely near-black,
  * fluorescent, or a single flat pastel. Clamping into these bands is what
- * keeps the slider fill legible against #000 and against #fff alike.
+ * keeps the slider fill legible against #000 and against #fff alike — and
+ * the saturation ceiling is deliberately low, because a hot fill reads as a
+ * warning, not as a colour borrowed from the cover.
  */
 const BAND = {
-  dark: { sMin: 0.4, sMax: 0.86, lMin: 0.56, lMax: 0.72 },
-  light: { sMin: 0.42, sMax: 0.9, lMin: 0.34, lMax: 0.47 },
+  dark: { sMin: 0.26, sMax: 0.58, lMin: 0.6, lMax: 0.74 },
+  light: { sMin: 0.3, sMax: 0.62, lMin: 0.34, lMax: 0.46 },
 } as const;
 
 export function makeAccent(h: number, s: number, l: number, dark: boolean): Accent {
@@ -187,7 +189,7 @@ export function hashString(input: string): number {
 export function accentFromSeed(seed: string, dark: boolean): Accent {
   if (!seed) return neutralAccent(dark);
   const h = hashString(seed);
-  return makeAccent(h % 360, 0.5 + ((h >> 9) % 30) / 100, dark ? 0.64 : 0.42, dark);
+  return makeAccent(h % 360, 0.34 + ((h >> 9) % 16) / 100, dark ? 0.66 : 0.4, dark);
 }
 
 const HUE_BINS = 24;

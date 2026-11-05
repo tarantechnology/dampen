@@ -4,48 +4,6 @@
  *
  * `app/design/page.tsx` renders every component against these and imports
  * nothing from `lib/audio/**` or `lib/spotify/**`.
- *
- * ========================================================================
- * next.config.ts — ONE CHANGE NEEDED (I do not own that file)
- * ========================================================================
- *
- * Tailwind is currently not compiling at all, so every page renders
- * unstyled. Turbopack infers its project root from the nearest lockfile,
- * finds `/Users/taran/pnpm-lock.yaml` outside the repo, and the `*.css`
- * rule therefore never matches `app/globals.css` — so
- * `@tailwindcss/turbopack` never runs. The emitted stylesheet is 5.7 kB of
- * raw passthrough (with "Unknown at rule: @theme / @utility" warnings)
- * instead of 59 kB of compiled CSS.
- *
- * Adding this block to `nextConfig` fixes it. Verified in both `next dev`
- * and `next build`: 5,710 bytes -> 59,036 bytes, no warnings.
- *
- *   turbopack: {
- *     root: __dirname,
- *     rules: {
- *       '*.css': {
- *         loaders: ['@tailwindcss/turbopack'],
- *         as: '*.css',
- *       },
- *     },
- *   },
- *
- * `root` is the part that actually matters; the `rules` block was in the
- * config earlier and has since been dropped, so both lines are listed.
- * The documented alternative is a `postcss.config.mjs` using
- * `@tailwindcss/postcss`, but that needs a dependency this project does not
- * have, and the loader route works once the root is pinned.
- *
- * `images.remotePatterns` is already correct for every Spotify artwork host,
- * so nothing is needed there. Two notes on how the UI uses next/image:
- *  - `images.qualities` can stay unset: nothing passes a `quality` prop, so
- *    the Next 16 default of `[75]` is all we need.
- *  - Nothing uses the deprecated `priority` prop; artwork that must not lazy
- *    load passes `loading="eager"` + `fetchPriority="high"` instead.
- *  - `components/ui/Artwork.tsx` falls back to a deterministic procedural
- *    cover on image error, so a host that is ever missed degrades rather
- *    than breaks.
- * ========================================================================
  */
 
 import type {
@@ -129,9 +87,9 @@ const NEUTRAL_COMP: CompressorParams = {
 export const FIXTURE_DEFAULT_PARAMS: DampenParams = {
   amount: 0,
   outputGain: 0,
-  highpass: { freq: 20, q: 0 },
+  highpass: { freq: 20, q: 0.707 },
   lowShelf: { freq: 100, gain: 0 },
-  lowpass: { freq: 20000, q: 0, stages: 1 },
+  lowpass: { freq: 20000, q: 0.707, stages: 1 },
   presenceDip: { freq: 2500, q: 1.1, gain: 0 },
   tilt: { freq: 900, gain: 0 },
   reverb: { mix: 0, decay: 1.8, preDelay: 18, damping: 0.5, size: 0.5 },
@@ -151,19 +109,20 @@ function params(patch: Partial<DampenParams>): DampenParams {
 /* ------------------------------------------------------------------ *
  * The eight presets
  *
- * Glyphs are geometric marks rather than emoji — they read as panel legends
- * on a piece of audio hardware instead of as chat decoration.
+ * Names, ids and blurbs mirror `lib/audio/presets.ts` exactly, so the chips
+ * on /design read the same as the chips in the app. The glyphs are carried
+ * because `Preset` requires them; nothing in the UI renders one.
  * ------------------------------------------------------------------ */
 
 export const FIXTURE_PRESETS: Preset[] = [
   {
-    id: 'next-door',
-    name: 'Next Door',
-    glyph: '◗',
-    blurb: 'Playing in the next room with the door pulled to.',
+    id: 'next-room',
+    name: 'Next Room',
+    glyph: '🚪',
+    blurb: 'Your music through a closed bedroom door, down the hall, with the party already over.',
     params: params({
-      highpass: { freq: 55, q: 0 },
-      lowpass: { freq: 520, q: 0, stages: 2 },
+      highpass: { freq: 55, q: 0.707 },
+      lowpass: { freq: 520, q: 0.707, stages: 2 },
       lowShelf: { freq: 110, gain: 2.5 },
       presenceDip: { freq: 2400, q: 1.2, gain: -7 },
       tilt: { freq: 900, gain: -3 },
@@ -179,13 +138,13 @@ export const FIXTURE_PRESETS: Preset[] = [
     ],
   },
   {
-    id: 'deep-water',
-    name: 'Deep Water',
-    glyph: '≈',
-    blurb: 'Submerged. Only the low end gets through to you.',
+    id: 'underwater',
+    name: 'Underwater',
+    glyph: '🌊',
+    blurb: 'Submerged and slow — the song reaching you through a few feet of water.',
     params: params({
-      highpass: { freq: 30, q: 0 },
-      lowpass: { freq: 240, q: 0, stages: 3 },
+      highpass: { freq: 30, q: 0.707 },
+      lowpass: { freq: 240, q: 0.707, stages: 3 },
       lowShelf: { freq: 90, gain: 4 },
       presenceDip: { freq: 1800, q: 0.9, gain: -6 },
       tilt: { freq: 800, gain: -5 },
@@ -202,12 +161,12 @@ export const FIXTURE_PRESETS: Preset[] = [
     ],
   },
   {
-    id: 'soft-snow',
-    name: 'Soft Snow',
-    glyph: '✳',
-    blurb: 'Edges rounded off, a pale bed of noise underneath.',
+    id: 'rainy-window',
+    name: 'Rainy Window',
+    glyph: '🌧️',
+    blurb: 'A record playing in the next flat while rain runs down the glass.',
     params: params({
-      lowpass: { freq: 2600, q: 0, stages: 1 },
+      lowpass: { freq: 2600, q: 0.707, stages: 1 },
       presenceDip: { freq: 3200, q: 1.4, gain: -4.5 },
       tilt: { freq: 1200, gain: -2 },
       reverb: { mix: 0.12, decay: 1.1, preDelay: 12, damping: 0.4, size: 0.35 },
@@ -221,13 +180,13 @@ export const FIXTURE_PRESETS: Preset[] = [
     ],
   },
   {
-    id: 'tape-room',
-    name: 'Tape Room',
-    glyph: '⊟',
-    blurb: 'Warm, wobbly and a little worn out.',
+    id: 'tape-memory',
+    name: 'Tape Memory',
+    glyph: '📼',
+    blurb: 'A cassette you taped off the radio in 1994, found in a drawer.',
     params: params({
-      highpass: { freq: 45, q: 0 },
-      lowpass: { freq: 4200, q: 0, stages: 1 },
+      highpass: { freq: 45, q: 0.707 },
+      lowpass: { freq: 4200, q: 0.707, stages: 1 },
       lowShelf: { freq: 120, gain: 1.5 },
       tilt: { freq: 1000, gain: -2.5 },
       reverb: { mix: 0.14, decay: 1.2, preDelay: 16, damping: 0.55, size: 0.4 },
@@ -246,13 +205,13 @@ export const FIXTURE_PRESETS: Preset[] = [
     ],
   },
   {
-    id: 'upstairs-cafe',
-    name: 'Upstairs Café',
-    glyph: '◍',
-    blurb: 'Cups and conversation, one floor above the music.',
+    id: 'library',
+    name: 'Library',
+    glyph: '📚',
+    blurb: 'Barely touched — the song two desks away in a quiet reading room.',
     params: params({
-      highpass: { freq: 70, q: 0 },
-      lowpass: { freq: 900, q: 0, stages: 2 },
+      highpass: { freq: 70, q: 0.707 },
+      lowpass: { freq: 900, q: 0.707, stages: 2 },
       presenceDip: { freq: 3000, q: 1.1, gain: -9 },
       tilt: { freq: 900, gain: -4 },
       reverb: { mix: 0.22, decay: 1.8, preDelay: 26, damping: 0.6, size: 0.6 },
@@ -268,13 +227,13 @@ export const FIXTURE_PRESETS: Preset[] = [
     ],
   },
   {
-    id: 'rain-window',
-    name: 'Rain Window',
-    glyph: '⌇',
-    blurb: 'Rain on the glass and the music out there behind it.',
+    id: 'deep-focus',
+    name: 'Deep Focus',
+    glyph: '🧠',
+    blurb: 'The evidence-maximal setting. Nearly unrecognisable as music, maximally ignorable.',
     params: params({
-      highpass: { freq: 60, q: 0 },
-      lowpass: { freq: 700, q: 0, stages: 2 },
+      highpass: { freq: 60, q: 0.707 },
+      lowpass: { freq: 700, q: 0.707, stages: 2 },
       lowShelf: { freq: 100, gain: 2 },
       presenceDip: { freq: 2600, q: 1.2, gain: -8 },
       tilt: { freq: 850, gain: -3.5 },
@@ -289,13 +248,13 @@ export const FIXTURE_PRESETS: Preset[] = [
     ],
   },
   {
-    id: 'study-carrel',
-    name: 'Study Carrel',
-    glyph: '⌷',
-    blurb: 'Just enough music left to mark the time passing.',
+    id: 'distant-radio',
+    name: 'Distant Radio',
+    glyph: '📻',
+    blurb: 'An AM station drifting in and out two rooms away.',
     params: params({
-      highpass: { freq: 80, q: 0 },
-      lowpass: { freq: 1400, q: 0, stages: 2 },
+      highpass: { freq: 80, q: 0.707 },
+      lowpass: { freq: 1400, q: 0.707, stages: 2 },
       presenceDip: { freq: 2200, q: 1.6, gain: -11 },
       tilt: { freq: 1000, gain: -4 },
       reverb: { mix: 0.1, decay: 1.0, preDelay: 14, damping: 0.5, size: 0.3 },
@@ -311,13 +270,13 @@ export const FIXTURE_PRESETS: Preset[] = [
     ],
   },
   {
-    id: 'lights-out',
-    name: 'Lights Out',
-    glyph: '●',
-    blurb: 'Nothing but the bass, and that from a long way off.',
+    id: 'dream',
+    name: 'Dream',
+    glyph: '☁️',
+    blurb: 'Vast, slow and slightly out of tune, like remembering the song rather than hearing it.',
     params: params({
-      highpass: { freq: 32, q: 0 },
-      lowpass: { freq: 160, q: 0, stages: 4 },
+      highpass: { freq: 32, q: 0.707 },
+      lowpass: { freq: 160, q: 0.707, stages: 4 },
       lowShelf: { freq: 80, gain: 5 },
       presenceDip: { freq: 1500, q: 0.8, gain: -5 },
       tilt: { freq: 700, gain: -6 },

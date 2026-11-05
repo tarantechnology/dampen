@@ -45,6 +45,11 @@ export function PresetChips({
         'no-scrollbar -mx-4 flex w-[calc(100%+2rem)] items-center gap-1.5 overflow-x-auto px-4',
         className,
       )}
+      style={{
+        // Let the row admit that it continues, without drawing a scrollbar.
+        maskImage:
+          'linear-gradient(to right, transparent, #000 16px, #000 calc(100% - 16px), transparent)',
+      }}
     >
       {chips.map((chip) => {
         const selected = chip.id === selectedId;

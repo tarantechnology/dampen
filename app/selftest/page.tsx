@@ -49,7 +49,7 @@ export default function SelfTestPage() {
   }, [run]);
 
   const counts = report
-    ? [report.pure, report.capture, report.offline].reduce(
+    ? [report.pure, report.capture, report.offline, report.browser].reduce(
         (a, r) => ({
           passed: a.passed + r.passed,
           failed: a.failed + r.failed,

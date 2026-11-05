@@ -1,167 +1,145 @@
 'use client';
 
-import { Search } from 'lucide-react';
 import type {
   SearchResults as SearchResultsData,
   SpotifyArtist,
   SpotifyTrack,
 } from '@/lib/spotify/types';
 import { cn } from '@/lib/cn';
-import { Artwork } from '@/components/ui/Artwork';
+import { formatTime } from '@/components/ui/format';
 import { EmptyState } from '@/components/ui/EmptyState';
-import { CardGridSkeleton, TrackListSkeleton } from '@/components/ui/Skeleton';
-import { ArtistRow } from './ArtistRow';
-import { PlaylistGrid } from './PlaylistGrid';
-import { TrackList } from './TrackList';
+import { RowSkeleton } from '@/components/ui/Skeleton';
+import { MediaRow } from './MediaRow';
 
 export interface SearchResultsProps {
   query: string;
   results: SearchResultsData | null;
-  isLoading?: boolean;
-  currentUri?: string | null;
-  isPlaying?: boolean;
+  isLoading: boolean;
+  currentUri: string | null;
   onPlayTrack(track: SpotifyTrack, index: number): void;
   onOpenPlaylist(id: string): void;
   onOpenArtist(artist: SpotifyArtist): void;
   className?: string;
 }
 
-function Section({
-  title,
-  count,
-  children,
-}: {
-  title: string;
-  count: number;
-  children: React.ReactNode;
-}) {
-  if (count === 0) return null;
+function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
-    <section className="space-y-2.5">
-      <div className="flex items-baseline justify-between">
-        <h3 className="legend">{title}</h3>
-        <span className="num text-[10px] text-ink-4">{count}</span>
-      </div>
-      {children}
-    </section>
+    <h3 className="px-2 pb-1 pt-3 text-[12.5px] font-medium text-t3">{children}</h3>
   );
 }
 
+/** Three short sections, each capped. Search is for finding, not browsing. */
 export function SearchResults({
   query,
   results,
-  isLoading = false,
-  currentUri = null,
-  isPlaying = false,
+  isLoading,
+  currentUri,
   onPlayTrack,
   onOpenPlaylist,
   onOpenArtist,
   className,
 }: SearchResultsProps) {
-  const trimmed = query.trim();
-
-  if (trimmed.length === 0) {
+  if (query.trim().length === 0) {
     return (
       <EmptyState
-        icon={<Search className="size-5" aria-hidden />}
-        title="Search your Spotify"
-        body="Tracks, artists, albums and playlists. Press / from anywhere to jump straight here."
+        title="Search your library"
+        body="Tracks, artists and playlists from Spotify."
         className={className}
       />
     );
   }
 
-  if (isLoading) {
+  if (isLoading && !results) {
     return (
-      <div className={cn('space-y-6', className)}>
-        <div className="space-y-2.5">
-          <div className="legend">Tracks</div>
-          <TrackListSkeleton rows={4} />
-        </div>
-        <div className="space-y-2.5">
-          <div className="legend">Playlists</div>
-          <CardGridSkeleton count={4} />
-        </div>
+      <div className={cn('flex flex-col', className)}>
+        {Array.from({ length: 6 }, (_, i) => (
+          <RowSkeleton key={i} />
+        ))}
       </div>
     );
   }
 
-  const total =
-    (results?.tracks.length ?? 0) +
-    (results?.artists.length ?? 0) +
-    (results?.playlists.length ?? 0) +
-    (results?.albums.length ?? 0);
+  const tracks = results?.tracks.slice(0, 8) ?? [];
+  const artists = results?.artists.slice(0, 4) ?? [];
+  const playlists = results?.playlists.slice(0, 4) ?? [];
 
-  if (!results || total === 0) {
+  if (tracks.length + artists.length + playlists.length === 0) {
     return (
       <EmptyState
-        icon={<Search className="size-5" aria-hidden />}
-        title={`Nothing for “${trimmed}”`}
-        body="Check the spelling, or try the artist on its own. Search covers your whole Spotify catalogue, not just your library."
+        title={`Nothing for “${query}”`}
+        body="Try an artist, an album or a few words of the title."
         className={className}
       />
     );
   }
 
   return (
-    <div className={cn('space-y-7', className)}>
-      <Section title="Tracks" count={results.tracks.length}>
-        <TrackList
-          label={`Track results for ${trimmed}`}
-          tracks={results.tracks}
-          currentUri={currentUri}
-          isPlaying={isPlaying}
-          onPlay={onPlayTrack}
-          meta="album"
-          className="max-h-[280px]"
-        />
-      </Section>
-
-      <Section title="Artists" count={results.artists.length}>
-        <ArtistRow
-          label={`Artist results for ${trimmed}`}
-          artists={results.artists}
-          onOpen={onOpenArtist}
-        />
-      </Section>
-
-      <Section title="Playlists" count={results.playlists.length}>
-        <PlaylistGrid
-          label={`Playlist results for ${trimmed}`}
-          playlists={results.playlists}
-          onOpen={onOpenPlaylist}
-        />
-      </Section>
-
-      <Section title="Albums" count={results.albums.length}>
-        <ul
-          aria-label={`Album results for ${trimmed}`}
-          className="grid grid-cols-[repeat(auto-fill,minmax(132px,1fr))] gap-1.5"
-        >
-          {results.albums.map((album) => (
-            <li key={album.id} className="flex flex-col gap-2.5 p-2">
-              <Artwork
-                images={album.images}
-                alt={`${album.name} cover`}
-                seed={album.name}
-                sizes="(max-width: 640px) 44vw, 170px"
-                targetWidth={320}
-                className="aspect-square w-full rounded-lg"
+    <div className={cn('flex flex-col pb-4', className)}>
+      {tracks.length > 0 ? (
+        <>
+          <SectionLabel>Songs</SectionLabel>
+          {tracks.map((track, index) => (
+            <button
+              key={track.id}
+              type="button"
+              onClick={() => onPlayTrack(track, index)}
+              className="rounded-[8px] text-left transition-colors duration-100 hover:bg-fill-1"
+            >
+              <MediaRow
+                images={track.album.images}
+                seed={`${track.album.name} ${track.artists[0]?.name ?? ''}`}
+                title={track.name}
+                subtitle={track.artists.map((a) => a.name).join(', ')}
+                trailing={formatTime(track.durationMs)}
+                current={track.uri === currentUri}
               />
-              <span className="min-w-0">
-                <span className="block truncate text-[12.5px] font-medium text-ink">
-                  {album.name}
-                </span>
-                {album.releaseDate ? (
-                  <span className="num mt-0.5 block text-[11px] text-ink-4">
-                    {album.releaseDate.slice(0, 4)}
-                  </span>
-                ) : null}
-              </span>
-            </li>
+            </button>
           ))}
-        </ul>
-      </Section>
+        </>
+      ) : null}
+
+      {artists.length > 0 ? (
+        <>
+          <SectionLabel>Artists</SectionLabel>
+          {artists.map((artist) => (
+            <button
+              key={artist.id}
+              type="button"
+              onClick={() => onOpenArtist(artist)}
+              className="rounded-[8px] text-left transition-colors duration-100 hover:bg-fill-1"
+            >
+              <MediaRow
+                images={artist.images}
+                seed={artist.name}
+                title={artist.name}
+                subtitle={artist.genres[0] ?? 'Artist'}
+                round
+              />
+            </button>
+          ))}
+        </>
+      ) : null}
+
+      {playlists.length > 0 ? (
+        <>
+          <SectionLabel>Playlists</SectionLabel>
+          {playlists.map((playlist) => (
+            <button
+              key={playlist.id}
+              type="button"
+              onClick={() => onOpenPlaylist(playlist.id)}
+              className="rounded-[8px] text-left transition-colors duration-100 hover:bg-fill-1"
+            >
+              <MediaRow
+                images={playlist.images}
+                seed={playlist.name}
+                title={playlist.name}
+                subtitle={`${playlist.trackCount} songs`}
+              />
+            </button>
+          ))}
+        </>
+      ) : null}
     </div>
   );
 }

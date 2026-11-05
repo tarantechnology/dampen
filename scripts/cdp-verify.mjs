@@ -78,7 +78,7 @@ class CDP {
       this.#pending.set(id, { resolve, reject });
       setTimeout(() => {
         if (this.#pending.delete(id)) reject(new Error(`${method} timed out`));
-      }, 60_000);
+      }, 30_000);
     });
   }
 
@@ -176,18 +176,27 @@ async function main() {
       await cdp.send('Runtime.enable');
       await cdp.send('Page.enable');
 
+      /*
+       * Poll, but tolerate an evaluate that never answers. OfflineAudioContext
+       * rendering and worklet construction block the renderer's main thread,
+       * so an individual Runtime.evaluate can hang well past any sane timeout.
+       * A hung probe is not a failed run — just try again.
+       */
       let report = null;
-      for (let i = 0; i < 80; i++) {
-        const { result } = await cdp.send('Runtime.evaluate', {
-          expression: 'JSON.stringify(window.__DAMPEN_SELFTEST__ ?? null)',
-          returnByValue: true,
-          awaitPromise: true,
-        });
-        if (result.value && result.value !== 'null') {
-          report = JSON.parse(result.value);
-          break;
+      for (let i = 0; i < 240; i++) {
+        try {
+          const { result } = await cdp.send('Runtime.evaluate', {
+            expression: 'JSON.stringify(window.__DAMPEN_SELFTEST__ ?? null)',
+            returnByValue: true,
+          });
+          if (result.value && result.value !== 'null') {
+            report = JSON.parse(result.value);
+            break;
+          }
+        } catch {
+          /* renderer busy — retry */
         }
-        await sleep(500);
+        await sleep(1000);
       }
 
       console.log('\n=== DSP self test (real browser) ===');
@@ -198,11 +207,16 @@ async function main() {
         console.log(`  threw: ${report.error}`);
         failures.push(`selftest threw: ${report.error}`);
       } else {
-        for (const [label, r] of [
-          ['pure', report.pure],
-          ['capture', report.capture],
-          ['offline (Web Audio)', report.offline],
-        ]) {
+        /*
+         * Enumerate groups from the report rather than hardcoding a list.
+         * A hardcoded list silently omitted the engine-integration suite,
+         * which then failed the run with every printed group showing zero
+         * failures — the most confusing possible output.
+         */
+        const groups = Object.entries(report).filter(
+          ([, v]) => v && typeof v === 'object' && typeof v.passed === 'number',
+        );
+        for (const [label, r] of groups) {
           console.log(
             `  ${label.padEnd(22)} ${r.passed} passed, ${r.failed} failed, ${r.skipped} skipped`,
           );
@@ -210,7 +224,7 @@ async function main() {
         if (!report.ok) failures.push('selftest reported failures');
         await writeFile(join(OUT, 'selftest.txt'), report.text ?? '', 'utf8');
         // Surface the individual failures, not just the count.
-        for (const r of [report.pure, report.capture, report.offline]) {
+        for (const [, r] of groups) {
           for (const c of r.results ?? []) {
             if (c.status === 'fail') console.log(`    FAIL  ${c.name} — ${c.detail ?? ''}`);
           }

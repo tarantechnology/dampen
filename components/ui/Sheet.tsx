@@ -1,11 +1,16 @@
 'use client';
 
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useSyncExternalStore, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { X } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { IconButton } from './Button';
+
+/* There is no document to portal into on the server. */
+const subscribeNever = () => () => {};
+const onClient = () => true;
+const onServer = () => false;
 
 export interface SheetProps {
   open: boolean;
@@ -15,6 +20,8 @@ export interface SheetProps {
   side?: 'left' | 'right';
   /** Max width at desktop. Full-bleed below 520px either way. */
   width?: number;
+  /** Replaces the body's default padding — for full-bleed contents. */
+  bodyClassName?: string;
   children: ReactNode;
 }
 
@@ -31,14 +38,13 @@ export function Sheet({
   title,
   side = 'right',
   width = 420,
+  bodyClassName,
   children,
 }: SheetProps) {
-  const [mounted, setMounted] = useState(false);
+  const mounted = useSyncExternalStore(subscribeNever, onClient, onServer);
   const panelRef = useRef<HTMLDivElement>(null);
   const restoreTo = useRef<HTMLElement | null>(null);
   const reduce = useReducedMotion();
-
-  useEffect(() => setMounted(true), []);
 
   useEffect(() => {
     if (!open) return;
@@ -141,7 +147,12 @@ export function Sheet({
               </IconButton>
             </header>
 
-            <div className="scroll-quiet min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pb-10">
+            <div
+              className={cn(
+                'scroll-quiet min-h-0 flex-1 overflow-y-auto overscroll-contain',
+                bodyClassName ?? 'px-4 pb-10',
+              )}
+            >
               {children}
             </div>
           </motion.div>

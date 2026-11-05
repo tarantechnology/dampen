@@ -26,6 +26,8 @@ export interface SliderProps {
   valueText?: string;
   onChange(value: number): void;
   disabled?: boolean;
+  /** Accent is reserved for the Dampen control; utility sliders stay neutral. */
+  tone?: 'neutral' | 'accent';
   className?: string;
 }
 
@@ -47,6 +49,7 @@ export function Slider({
   valueText,
   onChange,
   disabled = false,
+  tone = 'neutral',
   className,
 }: SliderProps) {
   const trackRef = useRef<HTMLDivElement>(null);
@@ -132,6 +135,7 @@ export function Slider({
 
   const fillLeft = bipolar ? Math.min(position, 0.5) : 0;
   const fillWidth = bipolar ? Math.abs(position - 0.5) : position;
+  const paint = tone === 'accent' ? 'bg-accent' : 'bg-[var(--text-2)]';
 
   return (
     <div
@@ -157,12 +161,13 @@ export function Slider({
     >
       <div className="relative h-1 w-full rounded-full bg-fill-2">
         <div
-          className="absolute inset-y-0 rounded-full bg-accent"
+          className={cn('absolute inset-y-0 rounded-full', paint)}
           style={{ left: `${fillLeft * 100}%`, width: `${fillWidth * 100}%` }}
         />
         <div
           className={cn(
-            'absolute top-1/2 size-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-accent',
+            'absolute top-1/2 size-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full',
+            paint,
             'shadow-[0_1px_3px_rgba(0,0,0,0.3)] transition-opacity duration-150',
             dragging ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 group-focus:opacity-100',
           )}

@@ -383,6 +383,32 @@ export const AMBIENCE_OPTIONS: ReadonlyArray<{ value: AmbienceKind; label: strin
   { value: 'fan', label: 'Fan' },
 ];
 
+/**
+ * Write a leaf into a copy of `DampenParams` by dot path.
+ *
+ * The engine owns this operation for real (`setParamPath` in
+ * lib/audio/params.ts); this version exists so the /design route can drive
+ * the same controls against fixtures without importing the engine.
+ */
+export function writeParam(
+  params: DampenParams,
+  path: string,
+  value: number | string,
+): DampenParams {
+  const parts = path.split('.');
+  const next: Record<string, unknown> = { ...(params as unknown as Record<string, unknown>) };
+  let node = next;
+  for (let i = 0; i < parts.length - 1; i += 1) {
+    const child = node[parts[i]];
+    if (typeof child !== 'object' || child === null) return params;
+    const copy = { ...(child as Record<string, unknown>) };
+    node[parts[i]] = copy;
+    node = copy;
+  }
+  node[parts[parts.length - 1]] = value;
+  return next as unknown as DampenParams;
+}
+
 /** Read a numeric leaf out of `DampenParams` by dot path. */
 export function readParam(params: DampenParams, path: string): number {
   const parts = path.split('.');

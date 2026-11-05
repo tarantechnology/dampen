@@ -42,7 +42,9 @@ import type {
 import {
   ambienceAllowedFor,
   DampenEngine,
+  isOutputSelectable,
   type LatencyReport,
+  type OutputSelectResult,
 } from './engine';
 import {
   listCaptureDevices,
@@ -50,6 +52,7 @@ import {
   onDeviceChange,
   type CaptureDevice,
   type FeedbackAssessment,
+  type OutputDevice,
 } from './capture';
 import { METER_FLOOR_DB } from './dsp';
 import { setParamPath } from './params';
@@ -91,6 +94,38 @@ const SILENT_METERS: EngineMeters = {
 
 const NO_RISK: FeedbackAssessment = { risk: false, reason: 'none', message: '' };
 
+/**
+ * Where the chosen output device is remembered.
+ *
+ * Re-picking an output every session would be tedious, and on macOS it is the
+ * difference between hearing Dampen and hearing nothing. Only the id is
+ * stored — no audio, nothing identifying, and `deviceId`s are already
+ * origin-scoped and rotated by the browser.
+ */
+const OUTPUT_STORAGE_KEY = 'dampen.outputDeviceId';
+
+function loadStoredOutput(): string {
+  // Every access is guarded: `localStorage` throws outright in some contexts
+  // (private mode with site data blocked, sandboxed frames), and a thrown
+  // preference read must not take the audio engine down with it.
+  try {
+    if (typeof localStorage === 'undefined') return '';
+    return localStorage.getItem(OUTPUT_STORAGE_KEY) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+function storeOutput(deviceId: string): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    if (deviceId) localStorage.setItem(OUTPUT_STORAGE_KEY, deviceId);
+    else localStorage.removeItem(OUTPUT_STORAGE_KEY);
+  } catch {
+    /* storage unavailable; the choice simply will not persist */
+  }
+}
+
 const NO_LATENCY: LatencyReport = {
   base: 0,
   output: 0,
@@ -122,6 +157,17 @@ interface DampenStore {
   captureSampleRate: number | null;
   captureChannels: number | null;
 
+  /* ---- output routing (the macOS Path B fix) ---- */
+
+  /** Enumerated audio outputs. */
+  outputDevices: OutputDevice[];
+  /** The chosen output id; `''` means "follow the system default". */
+  outputDevice: string;
+  /** False when the browser cannot choose an output at all. */
+  outputSelectable: boolean;
+  /** True when Dampen picked the output itself to break a feedback loop. */
+  outputAutoSelected: boolean;
+
   /* ---- policy + safety ---- */
 
   /** False when an ambience bed would overlap Spotify Content; see the engine. */
@@ -152,6 +198,11 @@ const useStore = create<DampenStore>(() => ({
   captureDevice: null,
   captureSampleRate: null,
   captureChannels: null,
+
+  outputDevices: [],
+  outputDevice: '',
+  outputSelectable: isOutputSelectable(),
+  outputAutoSelected: false,
 
   ambienceAllowed: ambienceAllowedFor('local'),
   feedbackRisk: false,
@@ -231,6 +282,9 @@ function syncFromEngine(eng: DampenEngine): void {
     latency: eng.getLatency(),
     captureSampleRate: settings?.sampleRate ?? null,
     captureChannels: settings?.channelCount ?? null,
+    outputDevice: eng.outputDeviceId,
+    outputSelectable: eng.outputSelectable,
+    outputAutoSelected: eng.outputAutoSelected,
     error: eng.error?.message ?? null,
   });
 }
@@ -268,15 +322,20 @@ function setInputMode(mode: InputMode): void {
  */
 async function refreshCaptureDevices(): Promise<CaptureDevice[]> {
   try {
-    const [devices, outputs] = await Promise.all([listCaptureDevices(), listOutputDevices()]);
-    useStore.setState({ captureDevices: devices });
+    // Capture first: its probe is what unlocks labels for *both* lists, and
+    // on Chrome it is also what makes named output sinks selectable at all.
+    const devices = await listCaptureDevices();
+    const outputs = await listOutputDevices();
+    useStore.setState({ captureDevices: devices, outputDevices: outputs });
     const eng = getEngine();
     if (eng) {
       // Re-assess with the current selection against the fresh output list.
       const selected = useStore.getState().captureDevice;
       const live = selected ? devices.find((d) => d.deviceId === selected.deviceId) ?? null : null;
       useStore.setState({ captureDevice: live });
+      eng.setOutputDevices(outputs);
       eng.setCaptureDevice(live, outputs);
+      await restoreStoredOutput(eng, outputs);
       syncFromEngine(eng);
     }
     return devices;
@@ -289,9 +348,74 @@ async function refreshCaptureDevices(): Promise<CaptureDevice[]> {
   }
 }
 
+/** Enumerate outputs only. Safe to call without a gesture (never probes). */
+async function refreshOutputDevices(): Promise<OutputDevice[]> {
+  try {
+    const outputs = await listOutputDevices();
+    useStore.setState({ outputDevices: outputs });
+    const eng = getEngine();
+    if (eng) {
+      eng.setOutputDevices(outputs);
+      syncFromEngine(eng);
+    }
+    return outputs;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Re-apply a remembered output choice, once we know the device still exists.
+ * Applying a stale id would just fail with `NotFoundError`, and silently
+ * falling back to the system default is exactly the broken state we are trying
+ * to avoid — so it is only attempted when the device is present.
+ */
+async function restoreStoredOutput(
+  eng: DampenEngine,
+  outputs: readonly OutputDevice[],
+): Promise<void> {
+  const stored = loadStoredOutput();
+  if (!stored || eng.outputDeviceId === stored) return;
+  if (!outputs.some((o) => o.deviceId === stored)) {
+    storeOutput('');
+    return;
+  }
+  const result = await eng.setOutputDevice(stored);
+  if (!result.ok) storeOutput('');
+}
+
+/**
+ * Choose where Dampen plays, independently of the system default.
+ *
+ * `''` restores the system default. The choice is persisted so it survives a
+ * reload.
+ */
+async function setOutputDevice(deviceId: string): Promise<OutputSelectResult> {
+  const eng = getEngine();
+  if (!eng) {
+    return { ok: false, code: 'unknown', message: 'Audio engine unavailable.' };
+  }
+  const result = await eng.setOutputDevice(deviceId);
+  if (result.ok) storeOutput(deviceId);
+  else useStore.setState({ error: result.message });
+  syncFromEngine(eng);
+  return result;
+}
+
 /**
  * Record which capture device the user selected, so the engine can assess
  * feedback risk *before* audio starts. Pass `null` to clear it.
+ */
+/**
+ * Record which capture device the user selected.
+ *
+ * Also refreshes the output list and, if the selection would make Dampen
+ * capture its own output, moves Dampen's output to a real physical device.
+ * That rescue is the difference between Path B working and the user hearing
+ * silence: on macOS the system default has to be the virtual device for
+ * Spotify to feed it, which means Chrome's default output is the virtual
+ * device too. `outputAutoSelected` goes true so the UI can say what happened
+ * rather than quietly changing their routing.
  */
 function setCaptureDevice(device: CaptureDevice | null): void {
   useStore.setState({ captureDevice: device });
@@ -299,14 +423,25 @@ function setCaptureDevice(device: CaptureDevice | null): void {
   if (!eng) return;
   eng.setCaptureDevice(device);
   syncFromEngine(eng);
-  // The output list matters for the same-device check and may be stale; refresh
-  // it in the background without re-prompting.
-  void listOutputDevices()
-    .then((outputs) => {
+
+  void (async () => {
+    try {
+      const outputs = await listOutputDevices();
+      useStore.setState({ outputDevices: outputs });
+      eng.setOutputDevices(outputs);
       eng.setCaptureDevice(device, outputs);
+
+      if (device) {
+        // A remembered choice wins over the automatic one.
+        await restoreStoredOutput(eng, outputs);
+        const auto = await eng.autoSelectSafeOutput();
+        if (auto && auto.ok) storeOutput(auto.deviceId);
+      }
       syncFromEngine(eng);
-    })
-    .catch(() => undefined);
+    } catch {
+      /* enumeration failed; the guard keeps whatever it already knew */
+    }
+  })();
 }
 
 /** Clear a tripped runaway guard once the user has fixed their routing. */
@@ -422,6 +557,21 @@ export interface UseDampen {
   /** Record the user's choice so feedback risk can be assessed before start. */
   setCaptureDevice(device: CaptureDevice | null): void;
 
+  /* ---- additive: output routing, the macOS Path B fix ---- */
+
+  /** Enumerated audio outputs. */
+  outputDevices: OutputDevice[];
+  /** The chosen output id; `''` follows the system default. */
+  outputDevice: string;
+  /** False when the browser has no `AudioContext.setSinkId`. */
+  outputSelectable: boolean;
+  /** True when Dampen chose the output itself to break a feedback loop. */
+  outputAutoSelected: boolean;
+  /** Choose where Dampen plays. Persisted across reloads. Never throws. */
+  setOutputDevice(deviceId: string): Promise<OutputSelectResult>;
+  /** Re-enumerate outputs only. Never prompts. */
+  refreshOutputDevices(): Promise<OutputDevice[]>;
+
   /* ---- additive: policy + safety ---- */
 
   /** False when an ambience bed would overlap Spotify Content. */
@@ -460,6 +610,10 @@ export function useDampen(): UseDampen {
   const captureDevice = useStore((s) => s.captureDevice);
   const captureSampleRate = useStore((s) => s.captureSampleRate);
   const captureChannels = useStore((s) => s.captureChannels);
+  const outputDevices = useStore((s) => s.outputDevices);
+  const outputDevice = useStore((s) => s.outputDevice);
+  const outputSelectable = useStore((s) => s.outputSelectable);
+  const outputAutoSelected = useStore((s) => s.outputAutoSelected);
   const ambienceAllowed = useStore((s) => s.ambienceAllowed);
   const feedbackRisk = useStore((s) => s.feedbackRisk);
   const feedback = useStore((s) => s.feedback);
@@ -477,6 +631,9 @@ export function useDampen(): UseDampen {
   useEffect(() => {
     return onDeviceChange((devices) => {
       useStore.setState({ captureDevices: devices });
+      // The output list changes with the same events — a newly installed
+      // BlackHole, or headphones being unplugged, both land here.
+      void refreshOutputDevices();
       const eng = engine;
       const selected = useStore.getState().captureDevice;
       if (!eng || !selected) return;
@@ -568,6 +725,12 @@ export function useDampen(): UseDampen {
       captureChannels,
       refreshCaptureDevices,
       setCaptureDevice,
+      outputDevices,
+      outputDevice,
+      outputSelectable,
+      outputAutoSelected,
+      setOutputDevice,
+      refreshOutputDevices,
       ambienceAllowed,
       feedbackRisk,
       feedback,
@@ -595,6 +758,10 @@ export function useDampen(): UseDampen {
       captureDevice,
       captureSampleRate,
       captureChannels,
+      outputDevices,
+      outputDevice,
+      outputSelectable,
+      outputAutoSelected,
       ambienceAllowed,
       feedbackRisk,
       feedback,

@@ -1,14 +1,13 @@
 'use client';
 
-import { Keyboard } from 'lucide-react';
+import { Sheet } from './Sheet';
+import { Group, GroupLabel } from './Rows';
 import { useUIStore } from './store';
-import { SHORTCUTS, type ShortcutSpec } from './useShortcuts';
-import { Sheet } from './Panel';
-import { Tooltip } from './Tooltip';
-import { Button } from './Button';
+import { SHORTCUTS } from './useShortcuts';
 
-const GROUPS: Array<ShortcutSpec['group']> = ['Dampen', 'Playback', 'Navigation'];
+const GROUPS = ['Playback', 'Dampen', 'Navigation'] as const;
 
+/** The `?` list. One sheet, three groups, a key cap per row. */
 export function ShortcutsOverlay() {
   const open = useUIStore((s) => s.shortcutsOpen);
   const setOpen = useUIStore((s) => s.setShortcutsOpen);
@@ -17,54 +16,38 @@ export function ShortcutsOverlay() {
     <Sheet
       open={open}
       onClose={() => setOpen(false)}
-      title="Keyboard"
-      description="Dampen is built to be played without the mouse. Bypass is one key, because A/B is the only way to actually hear the effect."
+      title="Keyboard shortcuts"
+      width={380}
     >
-      <div className="space-y-6">
+      <div className="flex flex-col gap-6 pt-1">
         {GROUPS.map((group) => (
-          <section key={group}>
-            <h3 className="legend mb-2.5">{group}</h3>
-            <ul className="space-y-1">
-              {SHORTCUTS.filter((s) => s.group === group).map((s) => (
-                <li
-                  key={s.description}
-                  className="flex items-center justify-between gap-4 rounded-lg px-2 py-1.5 odd:bg-white/[0.025]"
+          <section key={group} className="flex flex-col gap-2">
+            <GroupLabel>{group}</GroupLabel>
+            <Group>
+              {SHORTCUTS.filter((s) => s.group === group).map((shortcut) => (
+                <div
+                  key={shortcut.description}
+                  className="flex min-h-[44px] items-center gap-3 px-3.5 py-2.5"
                 >
-                  <span className="text-[13px] text-ink-2">{s.description}</span>
+                  <span className="min-w-0 flex-1 text-[14px] text-t1">
+                    {shortcut.description}
+                  </span>
                   <span className="flex shrink-0 items-center gap-1">
-                    {s.keys.map((k) => (
+                    {shortcut.keys.map((key) => (
                       <kbd
-                        key={k}
-                        className="num min-w-6 rounded-md border border-line-strong bg-white/[0.06] px-1.5 py-0.5 text-center text-[11px] font-semibold text-ink"
+                        key={key}
+                        className="num inline-flex h-6 min-w-6 items-center justify-center rounded-[6px] bg-fill-2 px-1.5 text-[11.5px] font-medium text-t2"
                       >
-                        {k}
+                        {key}
                       </kbd>
                     ))}
                   </span>
-                </li>
+                </div>
               ))}
-            </ul>
+            </Group>
           </section>
         ))}
       </div>
     </Sheet>
-  );
-}
-
-/** The small persistent affordance that tells people the overlay exists. */
-export function ShortcutsButton({ className }: { className?: string }) {
-  const setOpen = useUIStore((s) => s.setShortcutsOpen);
-  return (
-    <Tooltip label="Keyboard shortcuts" shortcut="?" side="left">
-      <Button
-        variant="ghost"
-        size="icon"
-        aria-label="Keyboard shortcuts"
-        onClick={() => setOpen(true)}
-        className={className}
-      >
-        <Keyboard className="size-4" />
-      </Button>
-    </Tooltip>
   );
 }

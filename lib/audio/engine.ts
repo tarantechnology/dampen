@@ -58,11 +58,14 @@ import {
   assessFeedbackRisk,
   CaptureError,
   captureErrorMessage,
+  pickPhysicalOutput,
   preferredContextSampleRate,
   readCaptureSettings,
+  resolveOutput,
   type CaptureDevice,
   type CaptureStreamSettings,
   type FeedbackAssessment,
+  type OutputDevice,
 } from './capture';
 import {
   blockLevels,
@@ -236,6 +239,43 @@ export interface DampenEngineOptions {
   readonly inputMode?: InputMode;
 }
 
+/**
+ * Result of an output-device change. A typed result rather than a throw: the
+ * failure modes here are all expected (no permission yet, device unplugged,
+ * browser without `setSinkId`) and the UI needs to branch on them, not catch
+ * them.
+ */
+export type OutputSelectFailureCode =
+  /** `AudioContext.setSinkId` is not implemented in this browser. */
+  | 'unsupported'
+  /** Needs a media permission grant first (the same one capture needs). */
+  | 'permission-denied'
+  /** The device was unplugged or removed. */
+  | 'no-device'
+  | 'unknown';
+
+export type OutputSelectResult =
+  | { ok: true; deviceId: string }
+  | { ok: false; code: OutputSelectFailureCode; message: string };
+
+/** An `AudioContext` that may implement `setSinkId` (Chrome 110+). */
+type SinkCapableContext = AudioContext & {
+  setSinkId?: (sinkId: string) => Promise<void>;
+};
+
+/**
+ * Can this browser choose its audio output independently of the system
+ * default?
+ *
+ * Detected on the prototype rather than on an instance, so the answer is
+ * available before any context exists — the UI needs it to decide whether to
+ * show a picker or explain the manual workaround.
+ */
+export function isOutputSelectable(): boolean {
+  if (typeof AudioContext === 'undefined') return false;
+  return 'setSinkId' in AudioContext.prototype;
+}
+
 /** End-to-end latency, as far as the platform will tell us. */
 export interface LatencyReport {
   /**
@@ -335,7 +375,11 @@ export class DampenEngine {
   /* ---- capture risk ---- */
 
   private captureDeviceInfo: CaptureDevice | null = null;
-  private outputDeviceInfo: readonly MediaDeviceInfo[] = [];
+  private outputDeviceInfo: readonly OutputDevice[] = [];
+  /** What we have asked `setSinkId` for. `''` = follow the system default. */
+  private outputDeviceIdValue = '';
+  /** True if the engine picked the output itself to break a loop. */
+  private outputAutoSelectedValue = false;
   private feedbackValue: FeedbackAssessment = NO_FEEDBACK_RISK;
   private captureSettings: CaptureStreamSettings | null = null;
   private runawayPolls = 0;
@@ -505,12 +549,156 @@ export class DampenEngine {
    */
   setCaptureDevice(
     device: CaptureDevice | null,
-    outputs: readonly MediaDeviceInfo[] = this.outputDeviceInfo,
+    outputs: readonly OutputDevice[] = this.outputDeviceInfo,
   ): void {
     if (this.disposed) return;
     this.captureDeviceInfo = device;
     this.outputDeviceInfo = outputs;
     this.refreshFeedback();
+  }
+
+  /* ---------------- output device selection ---------------- */
+
+  /** True if this browser supports choosing an output (`AudioContext.setSinkId`). */
+  get outputSelectable(): boolean {
+    return isOutputSelectable();
+  }
+
+  /** The output we have asked for. `''` means "follow the system default". */
+  get outputDeviceId(): string {
+    return this.outputDeviceIdValue;
+  }
+
+  /** The enumerated outputs last handed to {@link setOutputDevices}. */
+  get outputDevices(): readonly OutputDevice[] {
+    return this.outputDeviceInfo;
+  }
+
+  /** True if {@link autoSelectSafeOutput} chose the output rather than the user. */
+  get outputAutoSelected(): boolean {
+    return this.outputAutoSelectedValue;
+  }
+
+  /**
+   * Hand the engine the enumerated outputs, so the feedback guard can see the
+   * output side. Without this the guard is blind to the most likely failure.
+   */
+  setOutputDevices(outputs: readonly OutputDevice[]): void {
+    if (this.disposed) return;
+    this.outputDeviceInfo = outputs;
+    this.refreshFeedback();
+  }
+
+  /**
+   * Send Dampen's output to a specific device, independently of the system
+   * default.
+   *
+   * **This is what makes Path B work on macOS.** The Spotify desktop app has
+   * no per-application output picker, so it follows the system default —
+   * meaning the user must point the *system* default at BlackHole for Spotify
+   * to feed Dampen. Chrome then sends its own output there too, so the user
+   * hears nothing and Dampen's output is fed straight back into its own
+   * input. `AudioContext.setSinkId` is the self-sufficient fix: the page keeps
+   * playing to the real speakers while the system default stays on BlackHole.
+   *
+   * **Ordering, measured in Chrome 156 on macOS rather than assumed:**
+   * `setSinkId('')` always resolves, with or without a permission grant. A
+   * *named* sink needs the origin to hold a media permission grant — not
+   * because `setSinkId` refuses without one, but because without it
+   * `enumerateDevices()` returns a single `audiooutput` entry whose
+   * `deviceId`, `groupId` and `label` are all empty strings, so there is no id
+   * to pass. After the grant the real list appears and named sinks are
+   * accepted immediately. An unknown id rejects with `NotFoundError`.
+   *
+   * So: **request capture permission first, then choose an output.** Path B
+   * asks for the microphone anyway, so this costs nothing — but doing it in
+   * the other order silently leaves the user on the system default, which on
+   * macOS is the virtual device, which is silence.
+   *
+   * @param deviceId from {@link listOutputDevices}; `''` restores the system default.
+   * @returns a typed result; never throws.
+   */
+  async setOutputDevice(deviceId: string): Promise<OutputSelectResult> {
+    if (this.disposed) {
+      return { ok: false, code: 'unknown', message: 'The engine has been disposed.' };
+    }
+    const id = typeof deviceId === 'string' ? deviceId : '';
+
+    if (!this.outputSelectable) {
+      // Remember the intent anyway: a later context on a capable browser, or
+      // the UI's explanation of the manual workaround, both want to know.
+      this.outputDeviceIdValue = id;
+      this.refreshFeedback();
+      return {
+        ok: false,
+        code: 'unsupported',
+        message:
+          'This browser cannot choose its audio output (AudioContext.setSinkId is unavailable). ' +
+          'Set your system default output to your speakers and route only Spotify to the virtual device instead — ' +
+          'Background Music can do that per application.',
+      };
+    }
+
+    await this.ensureGraph();
+    const ctx = this.ctx as SinkCapableContext | null;
+    if (!ctx || typeof ctx.setSinkId !== 'function') {
+      this.outputDeviceIdValue = id;
+      return { ok: false, code: 'unsupported', message: 'No audio context to route.' };
+    }
+
+    try {
+      await ctx.setSinkId(id);
+      this.outputDeviceIdValue = id;
+      this.outputAutoSelectedValue = false;
+      this.refreshFeedback();
+      return { ok: true, deviceId: id };
+    } catch (err) {
+      const name =
+        typeof err === 'object' && err !== null && 'name' in err
+          ? String((err as { name: unknown }).name)
+          : '';
+      const code: OutputSelectFailureCode =
+        name === 'NotAllowedError' || name === 'SecurityError'
+          ? 'permission-denied'
+          : name === 'NotFoundError'
+            ? 'no-device'
+            : 'unknown';
+      const message =
+        code === 'permission-denied'
+          ? 'Choosing an output device needs media permission. Allow microphone access (Dampen needs it for capture anyway) and try again.'
+          : code === 'no-device'
+            ? 'That output device no longer exists.'
+            : `Could not switch output device${name ? ` (${name})` : ''}.`;
+      this.lastError = err instanceof Error ? err : new Error(message);
+      return { ok: false, code, message };
+    }
+  }
+
+  /**
+   * Break a capture/output loop automatically.
+   *
+   * If the guard says the input and the live output are the same hardware —
+   * the "system default is BlackHole, so Chrome plays into Dampen's own input"
+   * case — move Dampen's output to the first real physical device. The user
+   * should not have to understand CoreAudio routing to hear something.
+   *
+   * @returns the result of the switch, or `null` if nothing needed doing.
+   */
+  async autoSelectSafeOutput(): Promise<OutputSelectResult | null> {
+    if (this.disposed) return null;
+    if (this.feedbackValue.reason !== 'same-device') return null;
+    if (!this.outputSelectable) return null;
+
+    const target = pickPhysicalOutput(this.outputDeviceInfo);
+    if (!target) return null;
+
+    // Do not fight the user: if they explicitly chose this output, leave it.
+    const live = resolveOutput(this.outputDeviceInfo, this.outputDeviceIdValue);
+    if (live && live.deviceId === target.deviceId) return null;
+
+    const result = await this.setOutputDevice(target.deviceId);
+    if (result.ok) this.outputAutoSelectedValue = true;
+    return result;
   }
 
   /**
@@ -941,7 +1129,11 @@ export class DampenEngine {
    */
   private refreshFeedback(): void {
     const device = this.inputModeValue === 'capture' ? this.captureDeviceInfo : null;
-    this.feedbackValue = assessFeedbackRisk(device, this.outputDeviceInfo);
+    this.feedbackValue = assessFeedbackRisk(
+      device,
+      this.outputDeviceInfo,
+      this.outputDeviceIdValue,
+    );
     if (!this.feedbackValue.risk) {
       this.runawayPolls = 0;
       if (this.runawayDucked) this.resetRunawayGuard();
@@ -1092,6 +1284,21 @@ export class DampenEngine {
       // Re-derive the guard state for the freshly built graph.
       this.refreshFeedback();
       this.syncStatusFromContext();
+
+      /*
+       * A rebuilt context reverts to the system default sink, so the chosen
+       * output has to be re-applied. Fire-and-forget: a failure here is
+       * reported through `lastError` and leaves us on the default, which is
+       * the same place we would have been anyway.
+       */
+      if (this.outputDeviceIdValue && this.outputSelectable) {
+        const ctx2 = this.ctx as SinkCapableContext | null;
+        if (ctx2 && typeof ctx2.setSinkId === 'function') {
+          void ctx2.setSinkId(this.outputDeviceIdValue).catch((err: unknown) => {
+            this.lastError = err instanceof Error ? err : new Error(String(err));
+          });
+        }
+      }
     } catch (err) {
       this.lastError = err instanceof Error ? err : new Error(String(err));
       this.setStatus('error');

@@ -17,10 +17,10 @@ import { hashString } from './accent';
 export function proceduralCover(seed: string): React.CSSProperties {
   const h = hashString(seed);
   const hue = h % 360;
-  const second = (hue + 24 + ((h >> 7) % 40)) % 360;
+  const second = (hue + 18 + ((h >> 7) % 28)) % 360;
   const angle = 145 + ((h >> 3) % 60);
   return {
-    background: `linear-gradient(${angle}deg, hsl(${hue} 32% 46%), hsl(${second} 26% 22%))`,
+    background: `linear-gradient(${angle}deg, hsl(${hue} 22% 48%), hsl(${second} 18% 24%))`,
   };
 }
 
