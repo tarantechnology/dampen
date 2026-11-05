@@ -29,7 +29,6 @@ import type {
   SpotifyUser,
 } from './types';
 import {
-  arr,
   bool,
   boolOr,
   intOr,
@@ -299,6 +298,12 @@ export function asRepeatMode(value: unknown): RepeatMode {
 export function mapPlaybackState(raw: unknown): PlaybackState | null {
   if (!isRecord(raw)) return null;
 
+  // A real playback state always carries at least one of these. Requiring one
+  // means an empty or unrelated object is reported as `malformed` rather than
+  // silently rendering as a confident "nothing is playing".
+  const recognisable = 'device' in raw || 'item' in raw || 'is_playing' in raw || 'progress_ms' in raw;
+  if (!recognisable) return null;
+
   const device = rec(raw, 'device');
   const track = mapTrack(raw.item);
   const volumePercent = clampPercent(num(device, 'volume_percent'));
@@ -437,15 +442,9 @@ export function mapPage<T>(raw: unknown, mapItem: (item: unknown) => T | null): 
 
 /**
  * `GET /me/player/recently-played` is cursor-paged: it has `items` + `next`
- * but no meaningful `total`. Same mapper works; this alias documents intent.
+ * but no meaningful `total`. The same mapper works; this alias documents that
+ * the caller should not expect `total` to be populated.
  */
 export function mapCursorPage<T>(raw: unknown, mapItem: (item: unknown) => T | null): Page<T> {
   return mapPage(raw, mapItem);
 }
-
-/** True when the response body had no recognisable paging envelope at all. */
-export function looksLikePage(raw: unknown): boolean {
-  return isRecord(raw) && Array.isArray(raw.items);
-}
-
-export { arr as rawArray };

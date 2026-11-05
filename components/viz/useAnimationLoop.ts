@@ -23,30 +23,38 @@
  * disconnects every observer and listener.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react';
 
 const REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)';
+
+function subscribeReducedMotion(onChange: () => void): () => void {
+  if (typeof window.matchMedia !== 'function') return () => undefined;
+  const mql = window.matchMedia(REDUCED_MOTION_QUERY);
+  mql.addEventListener('change', onChange);
+  return () => mql.removeEventListener('change', onChange);
+}
+
+function readReducedMotion(): boolean {
+  return typeof window.matchMedia === 'function'
+    ? window.matchMedia(REDUCED_MOTION_QUERY).matches
+    : false;
+}
+
+/** Server snapshot: assume motion is fine, then correct on hydration. */
+function readReducedMotionServer(): boolean {
+  return false;
+}
 
 /**
  * Live value of `(prefers-reduced-motion: reduce)`.
  *
- * Starts `false` and settles after mount rather than reading matchMedia during
- * render, so server and first client render agree and React does not report a
- * hydration mismatch.
+ * `useSyncExternalStore` rather than `useState` + an effect: the media query
+ * genuinely is external state, and subscribing this way avoids the extra
+ * render pass (and the cascading-render hazard) of setting state from an
+ * effect on mount, while still giving a stable server snapshot for hydration.
  */
 export function usePrefersReducedMotion(): boolean {
-  const [reduced, setReduced] = useState(false);
-
-  useEffect(() => {
-    if (typeof window.matchMedia !== 'function') return;
-    const mql = window.matchMedia(REDUCED_MOTION_QUERY);
-    setReduced(mql.matches);
-    const onChange = (e: MediaQueryListEvent): void => setReduced(e.matches);
-    mql.addEventListener('change', onChange);
-    return () => mql.removeEventListener('change', onChange);
-  }, []);
-
-  return reduced;
+  return useSyncExternalStore(subscribeReducedMotion, readReducedMotion, readReducedMotionServer);
 }
 
 export interface AnimationLoopOptions {
@@ -93,10 +101,14 @@ export interface AnimationLoop {
 export function useAnimationLoop(options: AnimationLoopOptions): AnimationLoop {
   const { target, enabled = true, fps = 0, reducedFps = 10 } = options;
 
-  // The callback is read through a ref so that an inline arrow function in the
-  // caller does not tear down and restart the loop on every render.
+  // Latest-callback ref, so that an inline arrow function in the caller does
+  // not tear down and restart the loop on every render. Synced in an effect,
+  // never during render — a render can be discarded under concurrent
+  // rendering, and writing refs there is unsafe as well as a lint error.
   const onFrameRef = useRef(options.onFrame);
-  onFrameRef.current = options.onFrame;
+  useEffect(() => {
+    onFrameRef.current = options.onFrame;
+  });
 
   const reducedMotion = usePrefersReducedMotion();
 

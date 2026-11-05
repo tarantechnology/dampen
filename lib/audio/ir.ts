@@ -145,7 +145,7 @@ export function renderRoomIR(
   opts: Partial<RoomIROptions>,
   sampleRate: number,
   rng: () => number = Math.random,
-): Float32Array[] {
+): Float32Array<ArrayBuffer>[] {
   const { decay, preDelay, damping, size } = normalizeIROptions(opts);
   const fs = num(sampleRate, 48000, 8000, 192000);
 

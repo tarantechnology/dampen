@@ -34,6 +34,12 @@ export interface AppActions {
   nudgeAmount?(delta: number): void;
   toggleBypass?(): void;
   selectPresetIndex?(index: number): void;
+  /**
+   * Registered by the player island. The library calls it through the registry
+   * rather than taking its own `usePlayback()` subscription — one island owns
+   * playback, so a position tick can never re-render a track list.
+   */
+  playTrack?(uris: string[], contextUri?: string, offset?: number): void;
 }
 
 interface UIState {
@@ -59,9 +65,15 @@ interface UIState {
   bypass: boolean;
   publishDampen(next: { amount?: number; bypass?: boolean }): void;
 
-  /* mirrored now-playing artwork, for the backdrop */
+  /* mirrored now-playing, for the backdrop and the library's row states */
   artworkUrl: string | null;
-  setArtworkUrl(url: string | null): void;
+  currentUri: string | null;
+  isPlaying: boolean;
+  publishPlayback(next: {
+    artworkUrl?: string | null;
+    currentUri?: string | null;
+    isPlaying?: boolean;
+  }): void;
 
   /* cross-island command registry */
   actions: AppActions;
@@ -89,7 +101,14 @@ export const useUIStore = create<UIState>()((set) => ({
   publishDampen: (next) => set((s) => ({ amount: next.amount ?? s.amount, bypass: next.bypass ?? s.bypass })),
 
   artworkUrl: null,
-  setArtworkUrl: (artworkUrl) => set({ artworkUrl }),
+  currentUri: null,
+  isPlaying: false,
+  publishPlayback: (next) =>
+    set((s) => ({
+      artworkUrl: next.artworkUrl === undefined ? s.artworkUrl : next.artworkUrl,
+      currentUri: next.currentUri === undefined ? s.currentUri : next.currentUri,
+      isPlaying: next.isPlaying ?? s.isPlaying,
+    })),
 
   actions: {},
   registerActions: (next) => set((s) => ({ actions: { ...s.actions, ...next } })),

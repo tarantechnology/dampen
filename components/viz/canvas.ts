@@ -49,8 +49,14 @@ export function useCanvasMetrics(
   onChange?: () => void,
 ): RefObject<CanvasMetrics> {
   const metrics = useRef<CanvasMetrics>({ cssW: 0, cssH: 0, dpr: 1, version: 0 });
+
+  // Latest-callback ref, synced in an effect rather than during render: a ref
+  // write during render is both a lint error and genuinely unsafe under
+  // concurrent rendering, where a render can be thrown away.
   const onChangeRef = useRef(onChange);
-  onChangeRef.current = onChange;
+  useEffect(() => {
+    onChangeRef.current = onChange;
+  });
 
   useEffect(() => {
     const el = ref.current;

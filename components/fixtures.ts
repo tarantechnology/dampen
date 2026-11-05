@@ -57,13 +57,40 @@ export interface FixtureCaptureDevice {
   deviceId: string;
   label: string;
   likelyVirtual: boolean;
+  /**
+   * Whether this device also passes what it captures straight to the
+   * speakers. If it does, the listener hears raw Spotify *and* Dampen's
+   * output a few ms apart, which combs and sounds broken.
+   */
+  passthrough: 'none' | 'likely' | 'unknown';
 }
 
 export const FIXTURE_CAPTURE_DEVICES: FixtureCaptureDevice[] = [
-  { deviceId: 'blackhole-2ch', label: 'BlackHole 2ch', likelyVirtual: true },
-  { deviceId: 'loopback-dampen', label: 'Loopback: Dampen', likelyVirtual: true },
-  { deviceId: 'macbook-mic', label: 'MacBook Pro Microphone', likelyVirtual: false },
-  { deviceId: 'scarlett-2i2', label: 'Scarlett 2i2 USB', likelyVirtual: false },
+  { deviceId: 'blackhole-2ch', label: 'BlackHole 2ch', likelyVirtual: true, passthrough: 'none' },
+  {
+    deviceId: 'loopback-dampen',
+    label: 'Loopback: Dampen',
+    likelyVirtual: true,
+    passthrough: 'likely',
+  },
+  {
+    deviceId: 'background-music',
+    label: 'Background Music',
+    likelyVirtual: true,
+    passthrough: 'likely',
+  },
+  {
+    deviceId: 'macbook-mic',
+    label: 'MacBook Pro Microphone',
+    likelyVirtual: false,
+    passthrough: 'none',
+  },
+  {
+    deviceId: 'scarlett-2i2',
+    label: 'Scarlett 2i2 USB',
+    likelyVirtual: false,
+    passthrough: 'unknown',
+  },
 ];
 
 /* ------------------------------------------------------------------ *
@@ -86,9 +113,9 @@ const NEUTRAL_COMP: CompressorParams = {
 export const FIXTURE_DEFAULT_PARAMS: DampenParams = {
   amount: 0,
   outputGain: 0,
-  highpass: { freq: 20, q: 0.7 },
+  highpass: { freq: 20, q: 0 },
   lowShelf: { freq: 100, gain: 0 },
-  lowpass: { freq: 20000, q: 0.5, stages: 1 },
+  lowpass: { freq: 20000, q: 0, stages: 1 },
   presenceDip: { freq: 2500, q: 1.1, gain: 0 },
   tilt: { freq: 900, gain: 0 },
   reverb: { mix: 0, decay: 1.8, preDelay: 18, damping: 0.5, size: 0.5 },
@@ -97,7 +124,7 @@ export const FIXTURE_DEFAULT_PARAMS: DampenParams = {
   saturation: 0,
   wowFlutter: { wowRate: 0.8, wowDepth: 0, flutterRate: 8, flutterDepth: 0 },
   bitcrush: { bits: 16, downsample: 1, mix: 0 },
-  ambience: { kind: 'none', level: -60, tone: 0.5 },
+  ambience: { kind: 'none', level: -90, tone: 0.5 },
   drift: { rate: 0.05, depth: 0 },
 };
 
@@ -119,8 +146,8 @@ export const FIXTURE_PRESETS: Preset[] = [
     glyph: '◗',
     blurb: 'Playing in the next room with the door pulled to.',
     params: params({
-      highpass: { freq: 55, q: 0.7 },
-      lowpass: { freq: 520, q: 0.6, stages: 2 },
+      highpass: { freq: 55, q: 0 },
+      lowpass: { freq: 520, q: 0, stages: 2 },
       lowShelf: { freq: 110, gain: 2.5 },
       presenceDip: { freq: 2400, q: 1.2, gain: -7 },
       tilt: { freq: 900, gain: -3 },
@@ -141,8 +168,8 @@ export const FIXTURE_PRESETS: Preset[] = [
     glyph: '≈',
     blurb: 'Submerged. Only the low end gets through to you.',
     params: params({
-      highpass: { freq: 30, q: 0.7 },
-      lowpass: { freq: 240, q: 0.7, stages: 3 },
+      highpass: { freq: 30, q: 0 },
+      lowpass: { freq: 240, q: 0, stages: 3 },
       lowShelf: { freq: 90, gain: 4 },
       presenceDip: { freq: 1800, q: 0.9, gain: -6 },
       tilt: { freq: 800, gain: -5 },
@@ -164,7 +191,7 @@ export const FIXTURE_PRESETS: Preset[] = [
     glyph: '✳',
     blurb: 'Edges rounded off, a pale bed of noise underneath.',
     params: params({
-      lowpass: { freq: 2600, q: 0.5, stages: 1 },
+      lowpass: { freq: 2600, q: 0, stages: 1 },
       presenceDip: { freq: 3200, q: 1.4, gain: -4.5 },
       tilt: { freq: 1200, gain: -2 },
       reverb: { mix: 0.12, decay: 1.1, preDelay: 12, damping: 0.4, size: 0.35 },
@@ -173,7 +200,7 @@ export const FIXTURE_PRESETS: Preset[] = [
     }),
     macro: [
       { path: 'lowpass.freq', neutral: 20000 },
-      { path: 'ambience.level', neutral: -72 },
+      { path: 'ambience.level', neutral: -90 },
       { path: 'presenceDip.gain', neutral: 0 },
     ],
   },
@@ -183,8 +210,8 @@ export const FIXTURE_PRESETS: Preset[] = [
     glyph: '⊟',
     blurb: 'Warm, wobbly and a little worn out.',
     params: params({
-      highpass: { freq: 45, q: 0.7 },
-      lowpass: { freq: 4200, q: 0.5, stages: 1 },
+      highpass: { freq: 45, q: 0 },
+      lowpass: { freq: 4200, q: 0, stages: 1 },
       lowShelf: { freq: 120, gain: 1.5 },
       tilt: { freq: 1000, gain: -2.5 },
       reverb: { mix: 0.14, decay: 1.2, preDelay: 16, damping: 0.55, size: 0.4 },
@@ -199,7 +226,7 @@ export const FIXTURE_PRESETS: Preset[] = [
       { path: 'saturation', neutral: 0 },
       { path: 'wowFlutter.wowDepth', neutral: 0 },
       { path: 'bitcrush.mix', neutral: 0 },
-      { path: 'ambience.level', neutral: -72 },
+      { path: 'ambience.level', neutral: -90 },
     ],
   },
   {
@@ -208,8 +235,8 @@ export const FIXTURE_PRESETS: Preset[] = [
     glyph: '◍',
     blurb: 'Cups and conversation, one floor above the music.',
     params: params({
-      highpass: { freq: 70, q: 0.7 },
-      lowpass: { freq: 900, q: 0.6, stages: 2 },
+      highpass: { freq: 70, q: 0 },
+      lowpass: { freq: 900, q: 0, stages: 2 },
       presenceDip: { freq: 3000, q: 1.1, gain: -9 },
       tilt: { freq: 900, gain: -4 },
       reverb: { mix: 0.22, decay: 1.8, preDelay: 26, damping: 0.6, size: 0.6 },
@@ -219,7 +246,7 @@ export const FIXTURE_PRESETS: Preset[] = [
     }),
     macro: [
       { path: 'lowpass.freq', neutral: 20000 },
-      { path: 'ambience.level', neutral: -72 },
+      { path: 'ambience.level', neutral: -90 },
       { path: 'presenceDip.gain', neutral: 0 },
       { path: 'reverb.mix', neutral: 0 },
     ],
@@ -230,8 +257,8 @@ export const FIXTURE_PRESETS: Preset[] = [
     glyph: '⌇',
     blurb: 'Rain on the glass and the music out there behind it.',
     params: params({
-      highpass: { freq: 60, q: 0.7 },
-      lowpass: { freq: 700, q: 0.65, stages: 2 },
+      highpass: { freq: 60, q: 0 },
+      lowpass: { freq: 700, q: 0, stages: 2 },
       lowShelf: { freq: 100, gain: 2 },
       presenceDip: { freq: 2600, q: 1.2, gain: -8 },
       tilt: { freq: 850, gain: -3.5 },
@@ -241,7 +268,7 @@ export const FIXTURE_PRESETS: Preset[] = [
     }),
     macro: [
       { path: 'lowpass.freq', neutral: 20000 },
-      { path: 'ambience.level', neutral: -72 },
+      { path: 'ambience.level', neutral: -90 },
       { path: 'reverb.mix', neutral: 0 },
     ],
   },
@@ -251,8 +278,8 @@ export const FIXTURE_PRESETS: Preset[] = [
     glyph: '⌷',
     blurb: 'Just enough music left to mark the time passing.',
     params: params({
-      highpass: { freq: 80, q: 0.7 },
-      lowpass: { freq: 1400, q: 0.55, stages: 2 },
+      highpass: { freq: 80, q: 0 },
+      lowpass: { freq: 1400, q: 0, stages: 2 },
       presenceDip: { freq: 2200, q: 1.6, gain: -11 },
       tilt: { freq: 1000, gain: -4 },
       reverb: { mix: 0.1, decay: 1.0, preDelay: 14, damping: 0.5, size: 0.3 },
@@ -273,8 +300,8 @@ export const FIXTURE_PRESETS: Preset[] = [
     glyph: '●',
     blurb: 'Nothing but the bass, and that from a long way off.',
     params: params({
-      highpass: { freq: 32, q: 0.7 },
-      lowpass: { freq: 160, q: 0.8, stages: 4 },
+      highpass: { freq: 32, q: 0 },
+      lowpass: { freq: 160, q: 0, stages: 4 },
       lowShelf: { freq: 80, gain: 5 },
       presenceDip: { freq: 1500, q: 0.8, gain: -5 },
       tilt: { freq: 700, gain: -6 },
@@ -289,7 +316,7 @@ export const FIXTURE_PRESETS: Preset[] = [
       { path: 'lowpass.freq', neutral: 20000 },
       { path: 'reverb.mix', neutral: 0 },
       { path: 'width', neutral: 1 },
-      { path: 'ambience.level', neutral: -72 },
+      { path: 'ambience.level', neutral: -90 },
       { path: 'drift.depth', neutral: 0 },
     ],
   },
@@ -532,6 +559,14 @@ export const FIXTURE_SEARCH: SearchResults = {
   playlists: [FIXTURE_PLAYLISTS[0], FIXTURE_PLAYLISTS[2], FIXTURE_PLAYLISTS[5]],
   albums: [FIXTURE_TRACKS[7].album, FIXTURE_TRACKS[3].album, FIXTURE_TRACKS[25].album],
 };
+
+/**
+ * The engine is additionally exposing end-to-end latency and a feedback-risk
+ * flag. Mirrored here so `/design` can show the capture status strip and both
+ * of its warnings without reaching into lib/audio.
+ */
+export const FIXTURE_LATENCY_MS = 11.6;
+export const FIXTURE_FEEDBACK_RISK = false;
 
 export const FIXTURE_METERS: EngineMeters = {
   inputPeak: -8.4,

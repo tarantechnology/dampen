@@ -14,7 +14,6 @@
  */
 
 import {
-  describeError,
   err,
   errorFromThrown,
   kindForStatus,
@@ -27,6 +26,7 @@ import {
 import { proxyPathFromSpotifyUrl, type HttpMethod } from './endpoints';
 import { extractApiMessage, isRecord, parseJson, str } from './guards';
 import {
+  mapCursorPage,
   mapDevices,
   mapPage,
   mapPlaybackState,
@@ -120,6 +120,10 @@ function requestKey(method: HttpMethod, path: string, query: Query | undefined):
  */
 function classify(status: number, body: unknown, headers: Headers): SpotifyError {
   const message = extractApiMessage(body) ?? `Spotify returned HTTP ${status}.`;
+  // Our own route handlers put a machine-readable code in `error`; Spotify's
+  // own envelope nests the prose under `error.message`. `str` only matches the
+  // former (a string value), which is exactly what we want here.
+  const code = str(body, 'error') ?? undefined;
 
   if (status === 429) {
     // Since July 2026 a quota breach and a rate-limit breach are both 429 but
@@ -127,19 +131,19 @@ function classify(status: number, body: unknown, headers: Headers): SpotifyError
     const reason = str(body, 'reason');
     const retryAfterMs = retryAfterFromHeaders(headers);
     if (reason === QUOTA_EXCEEDED_REASON) {
-      return { kind: 'quota_exceeded', status, message, retryAfterMs };
+      return { kind: 'quota_exceeded', status, message, retryAfterMs, code };
     }
-    return { kind: 'rate_limited', status, message, retryAfterMs };
+    return { kind: 'rate_limited', status, message, retryAfterMs, code };
   }
 
   if (status === 403) {
     // Spotify answers 403 for free accounts on playback endpoints, with
     // messages like "Player command failed: Premium required".
-    if (/premium/i.test(message)) return { kind: 'premium_required', status, message };
-    return { kind: 'forbidden', status, message };
+    if (/premium/i.test(message)) return { kind: 'premium_required', status, message, code };
+    return { kind: 'forbidden', status, message, code };
   }
 
-  return { kind: kindForStatus(status), status, message };
+  return { kind: kindForStatus(status), status, message, code };
 }
 
 function retryAfterFromHeaders(headers: Headers): number {
@@ -274,7 +278,7 @@ async function mutate(
 /** Map a successful raw body, turning an unusable shape into a `malformed` error. */
 function mapped<T>(raw: Result<RawResponse>, map: (body: unknown) => T | null, what: string): Result<T> {
   if (!raw.ok) return raw;
-  const value = map(raw.body);
+  const value = map(raw.value.body);
   if (value === null) return err('malformed', `Could not read ${what} from Spotify's response.`, raw.value.status);
   return ok(value);
 }
@@ -453,7 +457,7 @@ export async function getSavedTracks(limits: PaginationLimits = {}): Promise<Res
 export async function getRecentlyPlayed(options: RequestOptions = {}): Promise<Result<SpotifyTrack[]>> {
   const raw = await get('me/player/recently-played', { ...options, query: { limit: 50, ...options.query } });
   if (!raw.ok) return raw;
-  return ok(mapPage(raw.value.body, mapRecentlyPlayedRow).items);
+  return ok(mapCursorPage(raw.value.body, mapRecentlyPlayedRow).items);
 }
 
 export type TopTimeRange = 'short_term' | 'medium_term' | 'long_term';
@@ -709,6 +713,3 @@ export async function logout(): Promise<Result<void>> {
     return errorFromThrown<void>(thrown);
   }
 }
-
-/** Re-exported so consumers don't need a second import for the common case. */
-export { describeError };

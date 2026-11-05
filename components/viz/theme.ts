@@ -143,7 +143,6 @@ export interface VizPalette {
 
   /** Instrument body. */
   bg: string;
-  bgTop: string;
   hairline: string;
 
   /** Chrome — kept deliberately faint. */
@@ -168,7 +167,6 @@ export interface VizPalette {
   /** Layer 3 — the filter magnitude response. */
   curve: string;
   curveGlow: string;
-  curveShade: string;
 
   /** Shared accent, for the waveform and the meter. */
   accent: string;
@@ -232,7 +230,6 @@ export function vizColors(amount: number): VizPalette {
     amount: q,
 
     bg: rgba(INK, 1),
-    bgTop: rgba(mix(INK, accent, 0.05), 1),
     hairline: 'rgba(255, 255, 255, 0.055)',
 
     grid: 'rgba(255, 255, 255, 0.042)',
@@ -241,8 +238,8 @@ export function vizColors(amount: number): VizPalette {
     label: 'rgba(255, 255, 255, 0.30)',
     labelBright: 'rgba(255, 255, 255, 0.46)',
 
-    ghostStroke: rgba(GHOST, 0.3),
-    ghostFillTop: rgba(GHOST, 0.14),
+    ghostStroke: rgba(GHOST, 0.34),
+    ghostFillTop: rgba(GHOST, 0.17),
     ghostFillBottom: rgba(GHOST, 0.012),
 
     liveStroke: rgba(filament, 0.95),
@@ -253,7 +250,6 @@ export function vizColors(amount: number): VizPalette {
 
     curve: rgba(BONE, 0.88),
     curveGlow: rgba(BONE, 0.1),
-    curveShade: rgba(accent, 0.07),
 
     accent: rgba(accent, 1),
     accentSoft: rgba(accent, 0.5),
@@ -266,7 +262,7 @@ export function vizColors(amount: number): VizPalette {
     meterOver: rgba(hex('#FF5A36'), 0.95),
 
     idle: rgba(accent, 0.26),
-    idleFill: rgba(accent, 0.05),
+    idleFill: rgba(accent, 0.035),
   };
 
   // Bounded cache: there are only 1/AMOUNT_STEP + 1 reachable keys, so this

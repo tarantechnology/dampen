@@ -29,6 +29,8 @@ export interface SliderProps {
   bipolar?: boolean;
   /** Short hint shown under the label on hover/focus. */
   hint?: string;
+  /** Drops the label/readout row — for the volume fader in the transport. */
+  compact?: boolean;
   disabled?: boolean;
   className?: string;
 }
@@ -59,6 +61,7 @@ export const Slider = memo(function Slider({
   onChange,
   bipolar = false,
   hint,
+  compact = false,
   disabled = false,
   className,
 }: SliderProps) {
@@ -148,14 +151,16 @@ export const Slider = memo(function Slider({
 
   return (
     <div className={cn('group/slider', disabled && 'opacity-45', className)}>
-      <div className="mb-1.5 flex items-baseline justify-between gap-3">
-        <label htmlFor={uid} className="legend truncate">
-          {label}
-        </label>
-        <span className="num text-[12px] font-medium tabular-nums text-ink-2">
-          {format(value)}
-        </span>
-      </div>
+      {compact ? null : (
+        <div className="mb-1.5 flex items-baseline justify-between gap-3">
+          <label htmlFor={uid} className="legend truncate">
+            {label}
+          </label>
+          <span className="num text-[12px] font-medium tabular-nums text-ink-2">
+            {format(value)}
+          </span>
+        </div>
+      )}
 
       <div
         id={uid}

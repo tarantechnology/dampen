@@ -166,58 +166,128 @@ export function createAmbienceBed(ctx: BaseAudioContext, status: WorkletStatus):
   const level = ctx.createGain();
   level.gain.value = 0; // start silent; never pop in on connect
 
-  noise.connect(hp);
+  // The generator is deliberately left *detached* at construction. `kind` is
+  // 'none' until something asks for a bed, and an unreachable source node is
+  // never pulled by the rendering graph — so an unused ambience bed costs
+  // nothing at all, not even a block of zeros per quantum.
   hp.connect(lp);
   lp.connect(tiltLow);
   tiltLow.connect(tiltHigh);
   tiltHigh.connect(level);
 
-  let connected = true;
+  let connected = false;
   let currentKind: AmbienceKind = 'none';
   let disposed = false;
+  /** Latest requested parameters; read by `transition`'s deferred half. */
+  let desired: AmbienceParams = { kind: 'none', level: -Infinity, tone: 0.5 };
+  /** Timer for the second half of a kind change (see `transition`). */
+  let pending: ReturnType<typeof setTimeout> | null = null;
+
+  /** Minimum time for half of a kind crossfade. */
+  const MIN_HALF_MS = 40;
+
+  /** Target level for the current parameters, as a linear gain. */
+  const levelFor = (p: AmbienceParams): number =>
+    // `dbToLin` maps -Infinity to exactly 0, so the fader bottom is silence.
+    clamp(p.kind === 'none' ? 0 : dbToLin(p.level), 0, 4);
 
   /**
-   * `setTargetAtTime` is used for everything: it starts from wherever the
-   * param currently is, needs no cancellation, and is continuous by
-   * construction, so repeated calls during a slider drag can never step.
-   * `timeConstant = ms/3000` reaches ~95 % of the target in `ms`.
+   * Linear ramp to an exact endpoint.
+   *
+   * The level gain must be able to reach a *true* zero — an exponential
+   * approach never arrives, so a "silent" bed would keep leaking at −80 dB
+   * forever and the branch could never be disconnected honestly. The filter
+   * frequencies use the same helper for consistency; they are never driven to
+   * a boundary where exactness matters.
    */
   const ramp = (param: AudioParam, target: number, rampMs: number): void => {
     const t = ctx.currentTime;
-    const v = Number.isFinite(target) ? target : 0;
+    let v = Number.isFinite(target) ? target : 0;
+    v = Math.min(Math.max(v, param.minValue), param.maxValue);
     const ms = clamp(rampMs, 0, 10000);
     if (ms < 1) {
       param.setValueAtTime(v, t);
       return;
     }
-    param.setTargetAtTime(v, t, ms / 3000);
+    // Truncate anything in flight at its current value, then ramp from there.
+    param.cancelScheduledValues(t);
+    param.setValueAtTime(param.value, t);
+    param.linearRampToValueAtTime(v, t + ms / 1000);
   };
 
-  const applyKind = (kind: AmbienceKind, rampMs: number): void => {
-    if (kind === currentKind) return;
+  /** Apply the shaping filters and tilt for a kind. */
+  const shapeFor = (p: AmbienceParams, rampMs: number): void => {
+    if (p.kind === 'none') return;
+    const shape = SHAPES[p.kind];
+    ramp(hp.frequency, clamp(shape.hp, 10, nyquist * 0.98), rampMs);
+    ramp(lp.frequency, clamp(shape.lp, 100, nyquist * 0.98), rampMs);
+    // tone 0 -> +9 dB low / -9 dB high (dark); 1 -> the reverse (bright).
+    const tilt = (num(p.tone, 0.5, 0, 1) - 0.5) * 2 * TILT_RANGE_DB;
+    ramp(tiltHigh.gain, tilt, rampMs);
+    ramp(tiltLow.gain, -tilt, rampMs);
+  };
 
-    if (kind === 'none') {
-      // Fade out first, then detach, so switching off is not a cut.
-      ramp(level.gain, 0, rampMs);
-      noise.port.postMessage({ kind: 'none' });
-      if (connected) {
-        try {
-          noise.disconnect(hp);
-        } catch {
-          /* already detached */
+  /**
+   * Switch generator kind, crossfading **through silence**.
+   *
+   * A generator change is instantaneous inside the worklet — one sample it is
+   * rain, the next it is a fan — so there is nothing to interpolate between.
+   * Fading the bed out, switching, and fading back in is the only way to make
+   * it inaudible, and it is also the only correct moment to connect or
+   * disconnect the branch: doing that while the bed is audible is a hard cut
+   * no matter how carefully the gain is ramped afterwards.
+   */
+  const transition = (rampMs: number): void => {
+    const half = Math.max(rampMs / 2, MIN_HALF_MS);
+
+    if (pending !== null) {
+      clearTimeout(pending);
+      pending = null;
+    }
+
+    const land = (): void => {
+      pending = null;
+      if (disposed) return;
+      // `desired` rather than a captured parameter: the user may have moved
+      // the level or tone slider during the fade, and this is the first moment
+      // those values can be applied.
+      const p = desired;
+
+      if (p.kind === 'none') {
+        // Unreachable source nodes stop being pulled by the rendering graph,
+        // so a bed that is switched off costs literally nothing.
+        noise.port.postMessage({ kind: 'none' });
+        if (connected) {
+          try {
+            noise.disconnect(hp);
+          } catch {
+            /* already detached */
+          }
+          connected = false;
         }
-        connected = false;
+        return;
       }
-    } else {
+
       if (!connected) {
         noise.connect(hp);
         connected = true;
       }
-      noise.port.postMessage({ kind });
-      // The shaping filters are ramped by `setParams`, which always runs
-      // immediately after this.
+      noise.port.postMessage({ kind: p.kind });
+      // Jump the shaping filters while silent, then fade the bed back in.
+      shapeFor(p, 0);
+      ramp(level.gain, levelFor(p), half);
+    };
+
+    // Nothing audible yet (graph construction, or an already-silent bed):
+    // switch immediately rather than scheduling a pointless fade.
+    if (rampMs < 1 || level.gain.value <= 0) {
+      ramp(level.gain, 0, 0);
+      land();
+      return;
     }
-    currentKind = kind;
+
+    ramp(level.gain, 0, half);
+    pending = setTimeout(land, half + 15);
   };
 
   return {
@@ -227,28 +297,31 @@ export function createAmbienceBed(ctx: BaseAudioContext, status: WorkletStatus):
     setParams(p: AmbienceParams, rampMs: number): void {
       if (disposed) return;
 
-      applyKind(p.kind, rampMs);
+      const kindChanged = p.kind !== currentKind;
+      desired = p;
+      // Claim the new kind immediately so that repeated calls during the fade
+      // (a slider drag, a 20 Hz UI loop) do not restart the transition.
+      currentKind = p.kind;
 
-      if (p.kind !== 'none') {
-        const shape = SHAPES[p.kind];
-        ramp(hp.frequency, clamp(shape.hp, 10, nyquist * 0.98), rampMs);
-        ramp(lp.frequency, clamp(shape.lp, 100, nyquist * 0.98), rampMs);
-
-        // tone 0 -> -9 dB high / +9 dB low (dark); 1 -> the reverse (bright).
-        const t = num(p.tone, 0.5, 0, 1);
-        const tilt = (t - 0.5) * 2 * TILT_RANGE_DB;
-        ramp(tiltHigh.gain, tilt, rampMs);
-        ramp(tiltLow.gain, -tilt, rampMs);
+      if (kindChanged) {
+        transition(rampMs);
+        return;
       }
 
-      // `dbToLin` maps -Infinity to exactly 0, so the fader bottom is silence.
-      const target = p.kind === 'none' ? 0 : dbToLin(p.level);
-      ramp(level.gain, clamp(target, 0, 4), rampMs);
+      // Mid-transition: `land` will pick up `desired` when it fires.
+      if (pending !== null) return;
+
+      shapeFor(p, rampMs);
+      ramp(level.gain, levelFor(p), rampMs);
     },
 
     dispose(): void {
       if (disposed) return;
       disposed = true;
+      if (pending !== null) {
+        clearTimeout(pending);
+        pending = null;
+      }
       noise.port.postMessage({ type: 'release' });
       for (const n of [noise, hp, lp, tiltLow, tiltHigh, level]) {
         try {

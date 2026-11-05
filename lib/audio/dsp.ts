@@ -106,6 +106,12 @@ export function lerp(a: number, b: number, t: number): number {
     // e.g. lerping from -Infinity dB would poison everything; snap instead.
     return k < 0.5 ? a : b;
   }
+  // Endpoints are returned verbatim rather than computed. `a + (b-a)*1` is not
+  // exactly `b` in binary floating point (lerp(1, 0.15, 1) gives
+  // 0.15000000000000002), and the macro dial at amount 1 is contractually
+  // required to reproduce a preset *exactly*.
+  if (k <= 0) return a;
+  if (k >= 1) return b;
   return a + (b - a) * k;
 }
 
@@ -120,6 +126,10 @@ export function lerp(a: number, b: number, t: number): number {
 export function lerpLog(a: number, b: number, t: number): number {
   if (a <= 0 || b <= 0 || !Number.isFinite(a) || !Number.isFinite(b)) return lerp(a, b, t);
   const k = clamp(t, 0, 1);
+  // Exact endpoints, for the same reason as `lerp`: `20000·(2800/20000)^1`
+  // evaluates to 2800.0000000000005.
+  if (k <= 0) return a;
+  if (k >= 1) return b;
   return a * Math.pow(b / a, k);
 }
 
@@ -207,7 +217,7 @@ export const SATURATION_K_MAX = 8;
 export function makeSaturationCurve(
   drive: number,
   length: number = SATURATION_CURVE_LENGTH,
-): Float32Array {
+): Float32Array<ArrayBuffer> {
   const n = Math.max(2, Math.floor(num(length, SATURATION_CURVE_LENGTH, 2, 1 << 16)));
   const d = num(drive, 0, 0, 1);
   const curve = new Float32Array(n);

@@ -332,7 +332,12 @@ export function setParamPath(
     return next;
   }
 
-  if (typeof value !== 'number') {
+  if (typeof value === 'number') {
+    // A NaN or Infinity edit is a bug upstream, not a request. Returning the
+    // original object (rather than clamping to the current value) lets callers
+    // detect the rejection by identity and skip a pointless state update.
+    if (!Number.isFinite(value)) return base;
+  } else {
     const parsed = Number(value);
     if (!Number.isFinite(parsed)) return base;
     value = parsed;

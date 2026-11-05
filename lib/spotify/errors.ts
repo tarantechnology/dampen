@@ -43,10 +43,16 @@ export interface SpotifyError {
   readonly kind: SpotifyErrorKind;
   /** HTTP status, when there was a response. */
   readonly status: number | null;
-  /** Safe to render. Never contains a token. */
+  /** Safe to render. Never contains a token, a secret, or an internal marker. */
   readonly message: string;
-  /** Only ever set on `rate_limited`. */
+  /** Only ever set on `rate_limited` / `quota_exceeded`. */
   readonly retryAfterMs?: number;
+  /**
+   * The machine-readable code from the upstream error body, when there was one
+   * — e.g. OAuth's `invalid_grant` / `invalid_client`. Branch on this rather
+   * than string-matching `message`, which is prose and may be localised.
+   */
+  readonly code?: string;
 }
 
 export type Result<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: SpotifyError };
@@ -55,20 +61,25 @@ export function ok<T>(value: T): Result<T> {
   return { ok: true, value };
 }
 
+export interface ErrorExtras {
+  readonly retryAfterMs?: number;
+  readonly code?: string;
+}
+
 export function err<T = never>(
   kind: SpotifyErrorKind,
   message: string,
   status: number | null = null,
-  retryAfterMs?: number,
+  extras: ErrorExtras = {},
 ): Result<T> {
-  return retryAfterMs === undefined
-    ? { ok: false, error: { kind, status, message } }
-    : { ok: false, error: { kind, status, message, retryAfterMs } };
-}
-
-/** True when the failure means "the session is gone, send them to login again". */
-export function isAuthFailure(error: SpotifyError): boolean {
-  return error.kind === 'unauthorized';
+  const error: SpotifyError = {
+    kind,
+    status,
+    message,
+    ...(extras.retryAfterMs === undefined ? {} : { retryAfterMs: extras.retryAfterMs }),
+    ...(extras.code === undefined ? {} : { code: extras.code }),
+  };
+  return { ok: false, error };
 }
 
 /** True when retrying the identical request could plausibly succeed. */
@@ -112,6 +123,12 @@ export function parseRetryAfterMs(raw: string | null): number {
     if (!Number.isFinite(seconds)) return FALLBACK;
     return Math.min(MAX, Math.max(0, seconds) * 1_000);
   }
+
+  // Only try the date branch for something that could actually be an
+  // HTTP-date. `Date.parse` is alarmingly permissive — it reads "-5" as a
+  // year and returns a valid timestamp — so a malformed numeric value would
+  // otherwise be silently misread as a date instead of falling back.
+  if (!/[A-Za-z]/.test(trimmed)) return FALLBACK;
 
   const when = Date.parse(trimmed);
   if (Number.isNaN(when)) return FALLBACK;

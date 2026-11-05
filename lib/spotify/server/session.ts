@@ -104,12 +104,9 @@ async function postToken(
 
   if (!response.ok) {
     if (response.status === 429) {
-      return err(
-        'rate_limited',
-        'Spotify rate-limited the token endpoint.',
-        429,
-        parseRetryAfterMs(response.headers.get('retry-after')),
-      );
+      return err('rate_limited', 'Spotify rate-limited the token endpoint.', 429, {
+        retryAfterMs: parseRetryAfterMs(response.headers.get('retry-after')),
+      });
     }
     const code = str(payload, 'error');
     const message = extractApiMessage(payload) ?? `Token request failed with HTTP ${response.status}.`;
@@ -117,13 +114,21 @@ async function postToken(
       // Since mid-2026 refresh tokens expire 6 months after the original
       // authorization and refreshing does not extend that lifetime, so this is
       // now a routine end-of-life, not an anomaly.
-      return err('unauthorized', `Spotify rejected the grant (${code}): ${message}`, response.status);
+      return err('unauthorized', 'Your Spotify session has expired. Please sign in again.', response.status, {
+        code,
+      });
     }
     if (code !== null && CLIENT_AUTH_CODES.has(code)) {
-      return err('bad_request', `client_auth:${code}: ${message}`, response.status);
+      // OUR credentials are wrong, not anything the user did. The detail goes
+      // to the server log; the caller gets a generic message so Spotify's
+      // client-auth text never lands in a browser response.
+      console.error(`[spotify/token] client authentication rejected (${code}): ${message}`);
+      return err('server', 'Spotify rejected this app\u2019s credentials. Check SPOTIFY_CLIENT_ID.', response.status, {
+        code,
+      });
     }
-    if (response.status >= 500) return err('server', message, response.status);
-    return err('bad_request', message, response.status);
+    if (response.status >= 500) return err('server', message, response.status, { code: code ?? undefined });
+    return err('bad_request', message, response.status, { code: code ?? undefined });
   }
 
   if (!parsed.ok) return err('malformed', 'Token endpoint returned a body that is not JSON.', response.status);
@@ -147,7 +152,7 @@ async function postToken(
 
 /** True when the failure specifically looks like bad client authentication. */
 function isClientAuthFailure(error: SpotifyError): boolean {
-  return error.kind === 'bad_request' && error.message.startsWith('client_auth:');
+  return error.code !== undefined && CLIENT_AUTH_CODES.has(error.code);
 }
 
 /**
